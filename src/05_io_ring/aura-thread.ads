@@ -74,7 +74,7 @@ package Aura.Thread is
       Snapshot_Valid       : aliased Boolean := False;  -- False до первого
                                                            -- Execution_Snapshot_Save
       Active_Sched_Ctx     : Sched_Ctx_Access;
-      Own_Sched_Ctx        : Sched_Ctx;
+      Own_Sched_Ctx        : aliased Sched_Ctx;
       Migration_List_Next  : Thread_Access;
       Fault_Endpoint       : Fault_Endpoint_Weak_Ref;
       Last_Syscall_Tick    : aliased Interfaces.Unsigned_64;  -- T64: watchdog

@@ -34,6 +34,11 @@ package Aura.Sched is
    --  Текущий поток на текущем CPU.
    function Current_Thread return Aura.Thread.Thread_Access;
 
+   --  Передать (пожертвовать) бюджет планирования от Caller к Receiver.
+   procedure Scheduler_Donate_Budget
+     (Caller   : Aura.Thread.Thread_Access;
+      Receiver : Aura.Thread.Thread_Access);
+
    --  Заблокировать текущий поток до внешнего пробуждения.
    procedure Scheduler_Block_Current;
 

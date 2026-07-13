@@ -33,6 +33,17 @@ package body Aura.Sched is
       return (if Cur /= null then Cur else Boot_Thread'Access);
    end Current_Thread;
 
+   procedure Scheduler_Donate_Budget
+     (Caller   : Aura.Thread.Thread_Access;
+      Receiver : Aura.Thread.Thread_Access)
+   is
+      use type Aura.Thread.Thread_Access;
+   begin
+      if Caller /= null and then Receiver /= null then
+         Receiver.Active_Sched_Ctx := Caller.Active_Sched_Ctx;
+      end if;
+   end Scheduler_Donate_Budget;
+
    procedure Scheduler_Block_Current is
    begin
       Aura.Hal.Spin_Loop_Hint;
