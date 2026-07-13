@@ -25,10 +25,27 @@ attributes/watchers, IoRing, CDT, namespace graph и IPC. Ключевые
 | `13_mac` | MAC (Bell-LaPadula/Biba) |
 | `15_watchdog` | Watchdog, политика перезапуска |
 | `16_reincarnation` | Reincarnation-контракты |
+| `16a_synapse` | Единый сигнальный движок: integrate-and-fire синапсы |
 | `17_iommu` | IOMMU-домены |
 | `18_driver_model` | Модель драйверов |
 | `19_hal` | Граница HAL + reference-бэкенд |
 | `app_a_sync_primitives` | Ticket lock, flip cell, wait queue |
+
+### Сигналы и политика мандатов
+
+Сигналы и подписки — одна абстракция: `Aura.Synapse`
+(integrate-and-fire). Положительные/отрицательные вклады с весами,
+фиксируемыми в Tap-мандате, верхний порог (накопление) и нижний
+(-спайк), утечка заряда, каскады с ограничением глубины. «Резкий»
+сигнал — вырожденный синапс с порогом 1.
+
+Политика мандатов (`Aura.Cap_Policy`): позитивные (Allow) и
+негативные (Deny) мандаты, временное окно `[Valid_From,
+Valid_Until)`, счётчик использований, обратимая
+активация/деактивация и необратимый отзыв по сигналу (синапс-гейт
+различает срабатывание по верхнему и нижнему порогу). Наборы политик
+сворачиваются режимами `Last_Wins` («сначала запретить, потом
+разрешить» и наоборот), `Deny_Wins`, `Allow_Wins`.
 
 ## Статус
 
@@ -48,7 +65,8 @@ gprbuild -P aura.gpr
 ```
 
 `aura_selftest` прогоняет smoke-тесты базовых инвариантов (rights,
-wait queue, notification, scheduler quantum, attr watchers) на
+wait queue, notification, scheduler quantum, attr watchers, cap
+policy, synapse) на
 reference-бэкенде.
 
 ## Лицензия

@@ -1,22 +1,124 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  Единый сигнальный движок AURA: integrate-and-fire синапс с
+--  положительными/отрицательными вкладами, двумя порогами (накопление и
+--  -спайк), утечкой и закрытым набором действий при срабатывании.
+--  Обычная подписка/notification — вырожденный синапс с Threshold_Hi = 1.
+
+with Aura.Wait_Queue;
+with Aura.Timer;
 
 package body Aura.Synapse is
 
+   use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
+   use type Aura.Notification.Notification_Ref;
 
-   function Synapse_Fire (Syn : in out Synapse) return Kernel_Error is (Ok);
-   function Check_Valid (Tap : Synapse_Tap_Write_Ref) return Kernel_Error is (Ok);
-   procedure Upgrade (W : Synapse_Weak_Ref; R : out Synapse_Ref; A : out Boolean) is begin R := null; A := False; end;
-   function Current_Tick return Interfaces.Unsigned_64 is (0);
-   function Saturating_Sub_U64 (A, B : Interfaces.Unsigned_64) return Interfaces.Unsigned_64 is (A - B);
+   type Fire_Direction is (Fired_Hi, Fired_Lo);
+
+   function Apply_Delta_Depth
+     (Syn         : in out Synapse;
+      Value_Delta : Interfaces.Integer_32;
+      Depth       : Natural) return Kernel_Error;
+
+   function Check_Valid (Cap : Synapse_Tap_Write_Ref) return Kernel_Error is
+     (if Cap.Object = null then Bad_Cap
+      elsif not Contains (Cap.Rights, Write) then Bad_Rights
+      else Ok);
+
+   function Downgrade (Strong : Synapse_Ref) return Synapse_Weak_Ref is
+     (Target         => Strong,
+      Expected_Epoch =>
+        (if Strong /= null then Strong.Header.Epoch else 0));
+
+   procedure Upgrade
+     (Self  : Synapse_Weak_Ref;
+      Value : out Synapse_Ref;
+      Alive : out Boolean)
+   is
+   begin
+      if Self.Target /= null
+        and then Self.Target.Header.Epoch = Self.Expected_Epoch
+      then
+         Value := Self.Target;
+         Alive := True;
+      else
+         Value := null;
+         Alive := False;
+      end if;
+   end Upgrade;
+
+   function Current_Tick return Interfaces.Unsigned_64
+     is (Aura.Timer.Current_Tick);
+
+   function Saturating_Sub_U64
+     (A, B : Interfaces.Unsigned_64) return Interfaces.Unsigned_64
+   is (if A >= B then A - B else 0);
 
    procedure Apply_Decay_If_Due (Syn : in out Synapse);
 
-   function Synapse_Apply_Delta
-     (Syn : in out Synapse; Value_Delta : Interfaces.Integer_32) return Kernel_Error
+   --  Диспетчеризация закрытого набора действий при срабатывании.
+   function Synapse_Fire
+     (Syn       : in out Synapse;
+      Direction : Fire_Direction;
+      Depth     : Natural) return Kernel_Error
+   is
+   begin
+      case Syn.Action.Kind is
+         when Signal_Notification_Action =>
+            declare
+               Notif : constant Aura.Notification.Notification_Ref :=
+                 Syn.Action.Notif_Target.Target;
+            begin
+               if Notif = null
+                 or else Notif.Header.Epoch /=
+                   Syn.Action.Notif_Target.Expected_Epoch
+               then
+                  return Revoked;
+               end if;
+               Notif.Pending := Notif.Pending or Syn.Action.Notif_Bit;
+               if Aura.Wait_Queue.Waiter_Count_Snapshot (Notif.Wait_Queue) > 0
+               then
+                  Aura.Wait_Queue.Wake_All_With_Signal (Notif.Wait_Queue);
+               end if;
+               return Ok;
+            end;
+
+         when Feed_Synapse_Action =>
+            if Depth >= Synapse_Max_Fire_Depth then
+               return Cascade_Too_Deep;
+            end if;
+            declare
+               Next  : Synapse_Ref;
+               Alive : Boolean;
+            begin
+               Upgrade (Syn.Action.Synapse_Target, Next, Alive);
+               if not Alive then
+                  return Revoked;
+               end if;
+               return Apply_Delta_Depth
+                 (Next.all, Signal_Delta (Syn.Action.Feed_Kind), Depth + 1);
+            end;
+
+         when Execute_Sealed_Action =>
+            --  OPEN (§16a.4 порта): Sealed_Call не реализован.
+            return Not_Supported;
+
+         when Gate_Policy_Action =>
+            if Syn.Action.Policy_Target = null then
+               return Bad_Cap;
+            end if;
+            Aura.Cap_Policy.Apply_Gate
+              (Syn.Action.Policy_Target.all,
+               (case Direction is
+                  when Fired_Hi => Syn.Action.Gate_On_Hi,
+                  when Fired_Lo => Syn.Action.Gate_On_Lo));
+            return Ok;
+      end case;
+   end Synapse_Fire;
+
+   function Apply_Delta_Depth
+     (Syn         : in out Synapse;
+      Value_Delta : Interfaces.Integer_32;
+      Depth       : Natural) return Kernel_Error
    is
       New_Charge : Interfaces.Integer_32;
    begin
@@ -30,7 +132,7 @@ package body Aura.Synapse is
             when Subtract_Threshold  =>
                Syn.Charge := Syn.Charge - Syn.Threshold_Hi;
          end case;
-         return Synapse_Fire (Syn);
+         return Synapse_Fire (Syn, Fired_Hi, Depth);
       end if;
 
       if Syn.Threshold_Lo.Present then
@@ -40,12 +142,17 @@ package body Aura.Synapse is
                when Subtract_Threshold  =>
                   Syn.Charge := Syn.Charge - Syn.Threshold_Lo.Value;
             end case;
-            return Synapse_Fire (Syn);
+            return Synapse_Fire (Syn, Fired_Lo, Depth);
          end if;
       end if;
 
       return Ok;
-   end Synapse_Apply_Delta;
+   end Apply_Delta_Depth;
+
+   function Synapse_Apply_Delta
+     (Syn         : in out Synapse;
+      Value_Delta : Interfaces.Integer_32) return Kernel_Error
+   is (Apply_Delta_Depth (Syn, Value_Delta, Depth => 0));
 
    function Synapse_Signal (Tap : Synapse_Tap_Write_Ref) return Kernel_Error
    is
@@ -57,11 +164,18 @@ package body Aura.Synapse is
       if Check_Status /= Ok then
          return Check_Status;
       end if;
-      Upgrade (null, Target, Target_Alive);
+      Upgrade (Tap.Object.Target, Target, Target_Alive);
       if not Target_Alive then
          return Revoked;
       end if;
-      Kind := (Tag => Positive_Signal, Positive_N => 0);
+      --  Знак и вес зафиксированы в Tap при подключении — вызывающий не
+      --  может подменить их на лету.
+      Kind :=
+        (if Tap.Object.Is_Positive
+         then Signal_Kind'(Tag => Positive_Signal,
+                           Positive_N => Tap.Object.N)
+         else Signal_Kind'(Tag => Negative_Signal,
+                           Negative_N => Tap.Object.N));
       return Synapse_Apply_Delta (Target.all, Signal_Delta (Kind));
    end Synapse_Signal;
 

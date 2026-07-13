@@ -6,27 +6,42 @@
 with Aura.Object; use Aura.Object;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Rights; use Aura.Rights;
+with Aura.Notification;
+with Aura.Cap_Policy;
 with Interfaces;
 
 package Aura.Synapse is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
 
    use type Interfaces.Integer_32;
    use type Interfaces.Integer_64;
 
-   type Notification_Weak_Ref is access all Integer; -- Placeholder
+   --  Глубина каскада Feed_Synapse: глубже — Cascade_Too_Deep
+   --  (T108/T94/T95, §16a порта).
+   Synapse_Max_Fire_Depth : constant := 8;
+
+   type Notification_Weak_Ref is record
+      Target         : Aura.Notification.Notification_Ref;
+      Expected_Epoch : Interfaces.Unsigned_32 := 0;
+   end record;
+
    type Synapse;
-   type Synapse_Weak_Ref is access all Synapse;
-   type Sealed_Call is access all Integer; -- Placeholder
+   type Synapse_Ref is access all Synapse;
+
+   type Synapse_Weak_Ref is record
+      Target         : Synapse_Ref;
+      Expected_Epoch : Interfaces.Unsigned_32 := 0;
+   end record;
+
+   type Sealed_Call is access all Integer; -- Placeholder (OPEN §16a.4)
+
    type Integer_32_Option (Present : Boolean := False) is record
       case Present is
          when True  => Value : Interfaces.Integer_32;
          when False => null;
       end case;
    end record;
-   type Synapse_Tap_Write_Ref is access all Integer; -- Placeholder
-   type Synapse_Ref is access all Synapse;
 
    type Signal_Kind_Tag is (Positive_Signal, Negative_Signal);
 
@@ -79,7 +94,8 @@ package Aura.Synapse is
    --  просто следует тому же принципу без необходимости изобретать его
    --  заново.
    type Pending_Action_Kind is
-     (Signal_Notification_Action, Feed_Synapse_Action, Execute_Sealed_Action);
+     (Signal_Notification_Action, Feed_Synapse_Action, Execute_Sealed_Action,
+      Gate_Policy_Action);
 
    type Pending_Action (Kind : Pending_Action_Kind := Signal_Notification_Action)
      is record
@@ -99,6 +115,13 @@ package Aura.Synapse is
               --  Опасное/составное действие — заранее собранный набор
               --  мандатов и закрытая операция над ними. См. §16a.4 порта.
               Sealed : Sealed_Call;
+           when Gate_Policy_Action =>
+              --  Сигнал управляет мандатом: активация/деактивация/
+              --  отзыв политики при срабатывании. Различает направление:
+              --  верхний порог (накопление) и нижний (-спайк/снижение).
+              Policy_Target : access Aura.Cap_Policy.Policy;
+              Gate_On_Hi    : Aura.Cap_Policy.Gate_Action;
+              Gate_On_Lo    : Aura.Cap_Policy.Gate_Action;
         end case;
      end record;
 
@@ -128,6 +151,30 @@ package Aura.Synapse is
       N            : Interfaces.Unsigned_32;
    end record
      with Volatile;
+
+   type Synapse_Tap_Access is access all Synapse_Tap;
+
+   --  Мандат на подачу сигнала через конкретный Tap.
+   type Synapse_Tap_Write_Ref is record
+      Object : Synapse_Tap_Access;
+      Rights : Aura.Rights.Mask := Aura.Rights.Write;
+   end record;
+
+   function Check_Valid (Cap : Synapse_Tap_Write_Ref) return Kernel_Error;
+
+   function Downgrade (Strong : Synapse_Ref) return Synapse_Weak_Ref;
+
+   procedure Upgrade
+     (Self  : Synapse_Weak_Ref;
+      Value : out Synapse_Ref;
+      Alive : out Boolean);
+
+   --  Прямая подача дельты (ядерный путь, без Tap-мандата) —
+   --  единая точка входа всех сигналов системы: «резкий» сигнал —
+   --  вырожденный синапс с Threshold_Hi = 1.
+   function Synapse_Apply_Delta
+     (Syn         : in out Synapse;
+      Value_Delta : Interfaces.Integer_32) return Kernel_Error;
 
 
    --  (декларации из продолжения-фрагмента, doc-lines 5793-5898,
