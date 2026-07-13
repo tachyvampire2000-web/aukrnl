@@ -23,6 +23,8 @@ package Aura.Thread is
       Period_Us    : Interfaces.Unsigned_64;
       Remaining_Us : aliased Interfaces.Unsigned_64;
       Deadline_Tick : aliased Interfaces.Unsigned_64 := 0;
+      Numa_Node     : aliased Interfaces.Unsigned_32 := 0;
+      Cpu_Affinity  : aliased Interfaces.Unsigned_64 := 1;
    end record
      with Volatile;
 

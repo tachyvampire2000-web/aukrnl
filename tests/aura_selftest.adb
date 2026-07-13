@@ -24,6 +24,8 @@ with System;
 with Aura.Rcu;
 with Aura.Fault;
 with Aura.Watchdog;
+with Aura.Channel;
+with Aura.Reincarnation;
 
 procedure Aura_Selftest is
 
@@ -426,6 +428,71 @@ procedure Aura_Selftest is
       Check ("sched: interrupt threading increments dispatch count", Interrupt_Thread_Dispatched_Count = 1);
    end Test_Interrupt_Threading;
 
+   procedure Test_New_Enhancements is
+      use Aura.Thread;
+      use Aura.Channel;
+      use Aura.Reincarnation;
+      use Aura.Synapse;
+      use type Interfaces.Unsigned_32;
+      use type Interfaces.Unsigned_64;
+      use type System.Address;
+
+      -- 1. Sched_Ctx NUMA/Affinity test
+      Ctx : Sched_Ctx := (Header => <>, Budget_Us => 0, Period_Us => 0, Remaining_Us => 0, Deadline_Tick => 0, Numa_Node => 4, Cpu_Affinity => 12345);
+
+      -- 2. Task_Force Memory/IO test
+      Tf  : Task_Force;
+
+      -- 3. Reincarnation contract link test
+      Contract : aliased Reincarnation_Contract;
+
+      -- 4. Synapse Tracepoint & Rate Limit test
+      Trace_Syn : aliased Synapse :=
+        (Header => <>, Charge => 0, Threshold_Hi => 1,
+         Threshold_Lo => (Present => False),
+         Reset_Mode_Field => To_Zero,
+         Decay => (Present => False),
+         Action =>
+           (Kind     => Trace_Event_Action,
+            Trace_Id => 123456789));
+
+      Lim_Syn : aliased Synapse :=
+        (Header => <>, Charge => 0, Threshold_Hi => 5,
+         Threshold_Lo => (Present => False),
+         Reset_Mode_Field => To_Zero,
+         Decay => (Present => False),
+         Action =>
+           (Kind => Reject_If_Saturated_Action));
+
+      St : Kernel_Error;
+   begin
+      -- 1
+      Check ("thread: Sched_Ctx Numa_Node correctly stored", Ctx.Numa_Node = 4);
+      Check ("thread: Sched_Ctx Cpu_Affinity correctly stored", Ctx.Cpu_Affinity = 12345);
+
+      -- 2
+      Tf.Shared_Memory_Budget := 9999;
+      Tf.Shared_Io_Budget := 8888;
+      Check ("channel: Task_Force Shared_Memory_Budget correctly stored", Tf.Shared_Memory_Budget = 9999);
+      Check ("channel: Task_Force Shared_Io_Budget correctly stored", Tf.Shared_Io_Budget = 8888);
+
+      -- 3
+      Contract.Associated_Watchdog := System.Null_Address;
+      Check ("reincarnation: Associated_Watchdog correctly initialized", Contract.Associated_Watchdog = System.Null_Address);
+
+      -- 4
+      Last_Fired_Trace_Id := 0;
+      St := Synapse_Apply_Delta (Trace_Syn, 1);
+      Check ("synapse: Tracepoint action fired successfully", St = Ok and Last_Fired_Trace_Id = 123456789);
+
+      St := Synapse_Apply_Delta (Lim_Syn, 2);
+      Check ("synapse: rate-limiting accepts delta below threshold", St = Ok);
+
+      -- Now trigger rate limit/saturation
+      St := Synapse_Apply_Delta (Lim_Syn, 3);
+      Check ("synapse: rate-limiting rejects delta exceeding threshold", St = Would_Block);
+   end Test_New_Enhancements;
+
    procedure Test_Synapse is
       use Aura.Synapse;
       use type Interfaces.Integer_32;
@@ -505,6 +572,7 @@ begin
    Test_Fault_Delegation;
    Test_NMI_Watchdog;
    Test_Interrupt_Threading;
+   Test_New_Enhancements;
 
    if Failures = 0 then
       Put_Line ("aura selftest: OK");
