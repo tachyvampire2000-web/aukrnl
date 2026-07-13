@@ -5,6 +5,7 @@
 
 with Aura.Object; use Aura.Object;
 with Interfaces;
+with System;
 
 package Aura.Reincarnation is
 
@@ -49,6 +50,7 @@ package Aura.Reincarnation is
       Group_Head               : Reincarnation_Contract_Ref_Option;
       Next_In_Group             : Reincarnation_Contract_Access;
       Sibling_Order             : Interfaces.Unsigned_32;
+      Associated_Watchdog       : System.Address := System.Null_Address;
    end record
      with Volatile;
 

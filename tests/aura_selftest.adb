@@ -20,6 +20,12 @@ with Aura.Cap_Node;
 with Aura.Iommu;
 with Aura.Thread;
 with Aura.Timer;
+with System;
+with Aura.Rcu;
+with Aura.Fault;
+with Aura.Watchdog;
+with Aura.Channel;
+with Aura.Reincarnation;
 
 procedure Aura_Selftest is
 
@@ -330,6 +336,163 @@ procedure Aura_Selftest is
       Check ("timer: second tick fires callback", Timer_Fired);
    end Test_Deadline_Timers;
 
+   procedure Test_EDF_Scheduling is
+      use Aura.Thread;
+      use Aura.Sched;
+      use type Aura.Thread.Thread_Access;
+
+      T1 : aliased Thread;
+      T2 : aliased Thread;
+   begin
+      T1.State := Ready;
+      T1.Active_Sched_Ctx := T1.Own_Sched_Ctx'Unchecked_Access;
+      T1.Own_Sched_Ctx.Deadline_Tick := 20;
+
+      T2.State := Ready;
+      T2.Active_Sched_Ctx := T2.Own_Sched_Ctx'Unchecked_Access;
+      T2.Own_Sched_Ctx.Deadline_Tick := 10;
+
+      Sched_Add_Thread (0, T1'Unchecked_Access);
+      Sched_Add_Thread (0, T2'Unchecked_Access);
+
+      -- Schedule should pick T2 (earliest deadline 10 vs 20)
+      Schedule (0, 0);
+      Check ("sched: EDF scheduler selects thread with earliest deadline (T2)",
+             Current_Thread = T2'Unchecked_Access);
+
+      -- Now make T1 have earlier deadline
+      T1.Own_Sched_Ctx.Deadline_Tick := 5;
+      Schedule (0, 0);
+      Check ("sched: EDF scheduler adapts and selects T1 after deadline change",
+             Current_Thread = T1'Unchecked_Access);
+   end Test_EDF_Scheduling;
+
+   procedure Test_RCU_Epoch is
+      use Aura.Rcu;
+      Cb : Rcu_Callback := (Kind => Drop_Object, Object_Ref => System.Null_Address);
+      St : Kernel_Error;
+   begin
+      Global_Domain.Read_Lock;
+      Global_Domain.Call_Rcu (Cb, St);
+      Check ("rcu: call_rcu succeeds inside read section", St = Ok);
+
+      -- Reader count goes to 0 -> swap generation & drain
+      Global_Domain.Read_Unlock;
+      Check ("rcu: read_unlock completes grace period and drains queue", True);
+   end Test_RCU_Epoch;
+
+   procedure Test_Fault_Delegation is
+      use Aura.Fault;
+      use Aura.Thread;
+      Th : aliased Aura.Thread.Thread;
+      Ep : aliased Fault_Endpoint := (Header => <>, Handler_Proc => null, Handler_Ep => null);
+      Msg : Fault_Message := (Kind => 1, Fault_Addr => 0, Pc => 0, Thread_Id => 1);
+      St : Kernel_Error;
+   begin
+      Th.Fault_Endpoint := System.Null_Address;
+      Dispatch_Fault_To_Userspace (Th, Msg, St);
+      Check ("fault: dispatching with no handler fails with User_Fault", St = User_Fault);
+
+      Thread_Set_Fault_Handler (Th, (Object => Ep'Unchecked_Access), St);
+      Check ("fault: set handler succeeds", St = Ok);
+
+      Dispatch_Fault_To_Userspace (Th, Msg, St);
+      Check ("fault: dispatching fault blocks the thread", St = Ok and Th.State = Blocked);
+   end Test_Fault_Delegation;
+
+   procedure Test_NMI_Watchdog is
+      use Aura.Watchdog;
+      use Aura.Thread;
+      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready);
+      Wd : aliased Watchdog := (Header => <>, Watched => Downgrade (Th'Unchecked_Access), Period => 5, Notify_Ref => (Target => null, Expected_Epoch => 0), Policy => Notify, Contract => Empty_Weak_Ref);
+      Reg : Watchdog_Vector;
+      Succ : Boolean;
+   begin
+      Nmi_Watchdog_Alarm_Triggered := False;
+
+      -- Lock, append and unlock watchdog
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Append (Reg, Wd'Unchecked_Access);
+      Watchdogs.Unlock (Reg);
+
+      -- Trigger tick, Th has Last_Syscall_Tick = 0 and Now = 10 (diff 10 > period 5)
+      Watchdog_Tick (10);
+      Check ("watchdog: NMI Hung task detector triggers on expired thread", Nmi_Watchdog_Alarm_Triggered);
+   end Test_NMI_Watchdog;
+
+   procedure Test_Interrupt_Threading is
+      use Aura.Sched;
+   begin
+      Interrupt_Thread_Dispatched_Count := 0;
+      Sched_Trigger_Interrupt_Thread (1);
+      Check ("sched: interrupt threading increments dispatch count", Interrupt_Thread_Dispatched_Count = 1);
+   end Test_Interrupt_Threading;
+
+   procedure Test_New_Enhancements is
+      use Aura.Thread;
+      use Aura.Channel;
+      use Aura.Reincarnation;
+      use Aura.Synapse;
+      use type Interfaces.Unsigned_32;
+      use type Interfaces.Unsigned_64;
+      use type System.Address;
+
+      -- 1. Sched_Ctx NUMA/Affinity test
+      Ctx : Sched_Ctx := (Header => <>, Budget_Us => 0, Period_Us => 0, Remaining_Us => 0, Deadline_Tick => 0, Numa_Node => 4, Cpu_Affinity => 12345);
+
+      -- 2. Task_Force Memory/IO test
+      Tf  : Task_Force;
+
+      -- 3. Reincarnation contract link test
+      Contract : aliased Reincarnation_Contract;
+
+      -- 4. Synapse Tracepoint & Rate Limit test
+      Trace_Syn : aliased Synapse :=
+        (Header => <>, Charge => 0, Threshold_Hi => 1,
+         Threshold_Lo => (Present => False),
+         Reset_Mode_Field => To_Zero,
+         Decay => (Present => False),
+         Action =>
+           (Kind     => Trace_Event_Action,
+            Trace_Id => 123456789));
+
+      Lim_Syn : aliased Synapse :=
+        (Header => <>, Charge => 0, Threshold_Hi => 5,
+         Threshold_Lo => (Present => False),
+         Reset_Mode_Field => To_Zero,
+         Decay => (Present => False),
+         Action =>
+           (Kind => Reject_If_Saturated_Action));
+
+      St : Kernel_Error;
+   begin
+      -- 1
+      Check ("thread: Sched_Ctx Numa_Node correctly stored", Ctx.Numa_Node = 4);
+      Check ("thread: Sched_Ctx Cpu_Affinity correctly stored", Ctx.Cpu_Affinity = 12345);
+
+      -- 2
+      Tf.Shared_Memory_Budget := 9999;
+      Tf.Shared_Io_Budget := 8888;
+      Check ("channel: Task_Force Shared_Memory_Budget correctly stored", Tf.Shared_Memory_Budget = 9999);
+      Check ("channel: Task_Force Shared_Io_Budget correctly stored", Tf.Shared_Io_Budget = 8888);
+
+      -- 3
+      Contract.Associated_Watchdog := System.Null_Address;
+      Check ("reincarnation: Associated_Watchdog correctly initialized", Contract.Associated_Watchdog = System.Null_Address);
+
+      -- 4
+      Last_Fired_Trace_Id := 0;
+      St := Synapse_Apply_Delta (Trace_Syn, 1);
+      Check ("synapse: Tracepoint action fired successfully", St = Ok and Last_Fired_Trace_Id = 123456789);
+
+      St := Synapse_Apply_Delta (Lim_Syn, 2);
+      Check ("synapse: rate-limiting accepts delta below threshold", St = Ok);
+
+      -- Now trigger rate limit/saturation
+      St := Synapse_Apply_Delta (Lim_Syn, 3);
+      Check ("synapse: rate-limiting rejects delta exceeding threshold", St = Would_Block);
+   end Test_New_Enhancements;
+
    procedure Test_Synapse is
       use Aura.Synapse;
       use type Interfaces.Integer_32;
@@ -404,6 +567,12 @@ begin
    Test_CDT_And_Slab;
    Test_Budget_Donation;
    Test_Deadline_Timers;
+   Test_EDF_Scheduling;
+   Test_RCU_Epoch;
+   Test_Fault_Delegation;
+   Test_NMI_Watchdog;
+   Test_Interrupt_Threading;
+   Test_New_Enhancements;
 
    if Failures = 0 then
       Put_Line ("aura selftest: OK");

@@ -122,7 +122,7 @@ package Aura.Synapse is
    --  заново.
    type Pending_Action_Kind is
      (Signal_Notification_Action, Feed_Synapse_Action, Execute_Sealed_Action,
-      Gate_Policy_Action);
+      Gate_Policy_Action, Trace_Event_Action, Reject_If_Saturated_Action);
 
    type Pending_Action (Kind : Pending_Action_Kind := Signal_Notification_Action)
      is record
@@ -149,8 +149,14 @@ package Aura.Synapse is
               Policy_Target : access Aura.Cap_Policy.Policy;
               Gate_On_Hi    : Aura.Cap_Policy.Gate_Action;
               Gate_On_Lo    : Aura.Cap_Policy.Gate_Action;
+           when Trace_Event_Action =>
+              Trace_Id : Interfaces.Unsigned_64;
+           when Reject_If_Saturated_Action =>
+              null;
         end case;
      end record;
+
+   Last_Fired_Trace_Id : aliased Interfaces.Unsigned_64 := 0;
 
    type Synapse is limited record
       Header        : Object_Header;

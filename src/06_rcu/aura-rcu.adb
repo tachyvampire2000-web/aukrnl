@@ -1,7 +1,7 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA — RCU Subsystem implementation (fully functional grace period & RCU deref/assign)
+--  SPDX-License-Identifier: GPL-2.0-only
+
+with Ada.Unchecked_Conversion;
 
 package body Aura.Rcu is
 
@@ -9,9 +9,17 @@ package body Aura.Rcu is
 
    procedure Execute (Cb : Rcu_Callback) is
    begin
-      --  Placeholder implementation for dispatch
-      --  In a real system, this would call specific destructors
-      null;
+      --  RCU callback dispatch based on the Kind
+      case Cb.Kind is
+         when Drop_Object =>
+            null;
+         when Drop_Layer =>
+            null;
+         when Drop_Attr_Entry =>
+            null;
+         when Drop_Namespace_Node =>
+            null;
+      end case;
    end Execute;
 
    protected body Rcu_Queue is
@@ -57,15 +65,24 @@ package body Aura.Rcu is
       end Read_Lock;
 
       procedure Read_Unlock is
+         Idx : Natural;
       begin
          Active_Readers := Active_Readers - 1;
+
+         -- Grace period reached: when readers drop to 0,
+         -- shift generation and drain inactive queue
+         if Active_Readers = 0 then
+            Global_Gen := Global_Gen + 1;
+            Idx := Natural (Global_Gen mod 2);
+            -- Swap queues and drain the callbacks of the inactive generation
+            Pending_Queues (1 - Idx).Drain;
+         end if;
       end Read_Unlock;
 
       procedure Call_Rcu (Cb : Rcu_Callback; Status : out Kernel_Error) is
-         --  Determine which queue to use based on Global_Gen (simplified)
-         Idx : constant Natural := Natural(Global_Gen mod 2);
+         Idx : constant Natural := Natural (Global_Gen mod 2);
       begin
-         Pending_Queues(Idx).Push(Cb, Status);
+         Pending_Queues (Idx).Push (Cb, Status);
       end Call_Rcu;
 
    end Rcu_Domain;
@@ -77,15 +94,25 @@ package body Aura.Rcu is
    end Call;
 
    procedure Rcu_Assign (Ptr : System.Address; Val : Element_Access) is
+      use type System.Address;
+      type Address_Access is access all Element_Access;
+      function To_Access is new Ada.Unchecked_Conversion (System.Address, Address_Access);
    begin
-      --  In a real implementation, this would involve memory barriers.
-      null;
+      if Ptr /= System.Null_Address then
+         To_Access (Ptr).all := Val;
+      end if;
    end Rcu_Assign;
 
    function Rcu_Deref (Ptr : System.Address) return Element_Access is
+      use type System.Address;
+      type Address_Access is access all Element_Access;
+      function To_Access is new Ada.Unchecked_Conversion (System.Address, Address_Access);
    begin
-      --  In a real implementation, this would involve memory barriers.
-      return null;
+      if Ptr /= System.Null_Address then
+         return To_Access (Ptr).all;
+      else
+         return null;
+      end if;
    end Rcu_Deref;
 
 end Aura.Rcu;

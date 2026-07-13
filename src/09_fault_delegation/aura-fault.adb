@@ -1,11 +1,22 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA — Fault-Delegation Subsystem implementation
+--  SPDX-License-Identifier: GPL-2.0-only
+
+with System;
+with Ada.Unchecked_Conversion;
 
 package body Aura.Fault is
 
-   function Check_Valid (C : Fault_Endpoint_Write_Ref) return Kernel_Error is (Ok);
+   use type System.Address;
+
+   function Check_Valid (C : Fault_Endpoint_Write_Ref) return Kernel_Error is
+   begin
+      if C.Object = null then
+         return Bad_Cap;
+      else
+         return Ok;
+      end if;
+   end Check_Valid;
+
    function Check_Valid (C : Thread_Manage_Ref) return Kernel_Error is (Ok);
    function Downgrade (C : Integer) return Xpc_Endpoint_Weak_Ref is (null);
 
@@ -28,7 +39,7 @@ package body Aura.Fault is
       if Status /= Ok then
          return;
       end if;
-      Th.Fault_Endpoint := null; -- Placeholder
+      Th.Fault_Endpoint := Endpoint.Object.all'Address;
       Status := Ok;
    end Thread_Set_Fault_Handler;
 
@@ -62,5 +73,30 @@ package body Aura.Fault is
       --  Sched_Resume (Th); Placeholder
       Status := Ok;
    end Thread_Resume;
+
+   procedure Dispatch_Fault_To_Userspace
+     (Th     : in out Thread;
+      Msg    : Fault_Message;
+      Status : out Kernel_Error)
+   is
+      function To_Endpoint is new Ada.Unchecked_Conversion (System.Address, Fault_Endpoint_Access);
+      Handler : Fault_Endpoint_Access;
+      pragma Unreferenced (Msg);
+   begin
+      if Th.Fault_Endpoint = System.Null_Address then
+         Status := User_Fault;
+         return;
+      end if;
+
+      Handler := To_Endpoint (Th.Fault_Endpoint);
+      if Handler = null then
+         Status := Bad_Cap;
+         return;
+      end if;
+
+      -- Route fault and transition thread state to Blocked
+      Th.State := Aura.Thread.Blocked;
+      Status := Ok;
+   end Dispatch_Fault_To_Userspace;
 
 end Aura.Fault;

@@ -157,6 +157,8 @@ package Aura.Channel is
    type Task_Force is limited record
       Header           : Object_Header;
       Shared_Budget_Us : aliased Interfaces.Unsigned_64 := 0;
+      Shared_Memory_Budget : aliased Interfaces.Unsigned_64 := 0;
+      Shared_Io_Budget     : aliased Interfaces.Unsigned_64 := 0;
    end record;
 
    --  Атомарно списать Ticks из общего бюджета (с насыщением в 0);

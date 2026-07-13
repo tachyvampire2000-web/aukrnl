@@ -141,6 +141,18 @@ package body Aura.Synapse is
                   when Fired_Hi => Syn.Action.Gate_On_Hi,
                   when Fired_Lo => Syn.Action.Gate_On_Lo));
             return Ok;
+
+         when Trace_Event_Action =>
+            Last_Fired_Trace_Id := Syn.Action.Trace_Id;
+            return Ok;
+
+         when Reject_If_Saturated_Action =>
+            -- Universal rate limiter: if threshold hi is fired, reject
+            if Direction = Fired_Hi then
+               return Would_Block;
+            else
+               return Ok;
+            end if;
       end case;
    end Synapse_Fire;
 

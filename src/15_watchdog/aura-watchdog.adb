@@ -279,6 +279,7 @@ package body Aura.Watchdog is
                   if Notif_Alive then
                      Aura.Notification.Notification_Signal (Notif);
                   end if;
+                  Nmi_Watchdog_Alarm_Triggered := True;
                   Apply_Watchdog_Policy (Wd.all, Watched.all);
                end if;
             end if;
