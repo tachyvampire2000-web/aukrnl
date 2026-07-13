@@ -15,11 +15,20 @@ package Aura.Sched is
 
    type Scheduler_Decision is (Keep_Running, Preempt);
 
+   Max_Sched_Threads : constant := 16;
+   type Sched_Threads_Array is array (1 .. Max_Sched_Threads) of Aura.Thread.Thread_Access;
+
    type Run_Queue is tagged limited record
-      Current      : Aura.Thread.Thread_Access;
-      Tick_Count   : Interfaces.Unsigned_64 := 0;
+      Current       : Aura.Thread.Thread_Access;
+      Tick_Count    : Interfaces.Unsigned_64 := 0;
       Quantum_Ticks : Interfaces.Unsigned_64 := 10;
+
+      Ready_Count   : Natural := 0;
+      Ready_Threads : Sched_Threads_Array := [others => null];
    end record;
+
+   -- Добавить готовый к исполнению поток в планировщик.
+   procedure Sched_Add_Thread (Cpu : Natural; Th : Aura.Thread.Thread_Access);
 
    --  Обработать таймерный тик на очереди этого CPU.
    function Scheduler_Tick
@@ -38,6 +47,12 @@ package Aura.Sched is
    procedure Scheduler_Donate_Budget
      (Caller   : Aura.Thread.Thread_Access;
       Receiver : Aura.Thread.Thread_Access);
+
+   Interrupt_Thread_Dispatched_Count : aliased Natural := 0;
+
+   -- Запустить потоковый обработчик прерывания (Interrupt Threading)
+   procedure Sched_Trigger_Interrupt_Thread
+     (Irq : Interfaces.Unsigned_32);
 
    --  Заблокировать текущий поток до внешнего пробуждения.
    procedure Scheduler_Block_Current;

@@ -70,7 +70,7 @@ package Aura.Rcu is
       procedure Drain;
 
    private
-      Entries : Callback_Array := (others => (Present => False));
+      Entries : Callback_Array := [others => (Present => False)];
       Len     : Natural := 0;
    end Rcu_Queue;
 

@@ -22,13 +22,14 @@ package Aura.Thread is
       Budget_Us    : Interfaces.Unsigned_64;
       Period_Us    : Interfaces.Unsigned_64;
       Remaining_Us : aliased Interfaces.Unsigned_64;
+      Deadline_Tick : aliased Interfaces.Unsigned_64 := 0;
    end record
      with Volatile;
 
    type Sched_Ctx_Access is access all Sched_Ctx;
    type Thread;
    type Thread_Access is access all Thread;
-   type Fault_Endpoint_Weak_Ref is access all Integer; -- Placeholder
+   subtype Fault_Endpoint_Weak_Ref is System.Address;
    type Sched_Ctx_Manage_Ref is access all Integer; -- Placeholder
 
    type Execution_Context is record

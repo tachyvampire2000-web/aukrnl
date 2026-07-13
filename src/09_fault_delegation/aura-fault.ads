@@ -17,7 +17,19 @@ package Aura.Fault is
    type Xpc_Endpoint_Weak_Ref is access all Integer; -- Placeholder
 
    subtype Thread is Aura.Thread.Thread;
-   type Fault_Endpoint_Write_Ref is access all Integer; -- Placeholder
+
+   type Fault_Endpoint is limited record
+      Header       : Object_Header;
+      Handler_Proc : Process_Context_Weak_Ref;
+      Handler_Ep   : Xpc_Endpoint_Weak_Ref;
+   end record;
+
+   type Fault_Endpoint_Access is access all Fault_Endpoint;
+
+   type Fault_Endpoint_Write_Ref is record
+      Object : Fault_Endpoint_Access;
+   end record;
+
    type Thread_Manage_Ref is access all Integer; -- Placeholder
 
    type Phys_Addr_Option (Present : Boolean := False) is record
@@ -26,13 +38,6 @@ package Aura.Fault is
          when False => null;
       end case;
    end record;
-
-   type Fault_Endpoint is limited record
-      Header       : Object_Header;
-      Handler_Proc : Process_Context_Weak_Ref;
-      Handler_Ep   : Xpc_Endpoint_Weak_Ref;
-   end record
-     with Volatile;
 
    type Fault_Message is record
       Kind       : Interfaces.Unsigned_32;
@@ -59,5 +64,9 @@ package Aura.Fault is
       Map_Va     : Interfaces.Unsigned_64;
       Status     : out Kernel_Error);
 
+   procedure Dispatch_Fault_To_Userspace
+     (Th     : in out Thread;
+      Msg    : Fault_Message;
+      Status : out Kernel_Error);
 
 end Aura.Fault;

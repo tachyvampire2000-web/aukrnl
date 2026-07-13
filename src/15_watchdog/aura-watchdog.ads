@@ -174,6 +174,8 @@ package Aura.Watchdog is
    procedure Apply_Watchdog_Policy
      (Wd : Watchdog; Watched : in out Aura.Thread.Thread);
 
+   Nmi_Watchdog_Alarm_Triggered : aliased Boolean := False;
+
    --  T64: проверка всех живых Watchdog на просрочку heartbeat —
    --  вызывается из таймерного прерывания (§8 порта).
    procedure Watchdog_Tick (Now : Interfaces.Unsigned_64);
