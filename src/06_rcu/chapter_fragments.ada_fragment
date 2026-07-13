@@ -1,0 +1,203 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 3323-3374 ---
+   function Kernel_Submit_Sqe
+     (Process : Process_Context_Ref;
+      Sqe     : Io_Ring_Sqe) return Submit_Or_Error
+   is
+      Cspace : constant Cspace_Ref := Process.Cspace;
+      Cap    : Erased_Cap;
+      Found  : Boolean;
+      Inner  : constant Io_Ring_Sqe_Inner := Sqe_Cells.Read (Sqe);
+   begin
+      Cspace_Slot (Cspace, Natural (Inner.Cap_Index), Cap, Found);
+      if not Found then
+         return Error_Result (Bad_Cap);
+      end if;
+      if Check_Valid (Cap) /= Ok then
+         return Error_Result (Check_Valid (Cap));
+      end if;
+
+      case Inner.Op_Code is
+         when Read | Device_Query =>
+            if not Contains (Cap.Rights, Aura.Rights.Read) then
+               return Error_Result (Perm_Denied);
+            end if;
+         when Write =>
+            if not Contains (Cap.Rights, Aura.Rights.Write) then
+               return Error_Result (Perm_Denied);
+            end if;
+         when others => null;
+      end case;
+
+      case Inner.Op_Code is
+         when Read              => return Process_Read (Cap, Inner);
+         when Write              => return Process_Write (Cap, Inner);
+         when Xpc_Call           => return Process_Xpc_Call (Cap, Inner);
+         when Xpc_Reply          => return Process_Xpc_Reply (Cap, Inner);
+         when Map_Memory         => return Handle_Map_Memory (Cap, Inner);
+         when Unmap_Memory       => return Handle_Unmap_Memory (Cap, Inner);
+         when Device_Query       => return Handle_Device_Query (Cap, Inner);
+         when Attr_Get | Attr_Set
+            | Attr_Watch         => return Handle_Attr_Op (Cap, Inner);
+         when Mount              => return Handle_Mount_Op (Process, Inner);
+         when Restart_Notify     => return Handle_Restart_Notify (Cap, Inner);
+         when Inflight_Poll      =>
+            Check_Inflight_Deadlines (Process.Io_Ring);
+            return Sync_Ok_Result (0);
+         when Batch | Template   => return Error_Result (Unknown_Op);
+            --  Batch/Template — отдельные точки входа (Io_Batch_Submit,
+            --  Io_Template_Execute, §5.6a/§5.6b порта), не диспетчеризуются
+            --  через эту функцию — идентично комментарию Rust-версии
+            --  в §5.6b/template-04 о том, что обе функции являются
+            --  отдельными syscall со своей сигнатурой, а не match-ветками.
+      end case;
+   end Kernel_Submit_Sqe;
+
+--  --- doc lines 3380-3391 ---
+   type Notification is limited record
+      Header      : Object_Header;
+      Pending      : aliased Interfaces.Unsigned_64;
+      Wait_Queue   : Aura.Wait_Queue.Instance;  --  §10 порта
+   end record
+     with Volatile;
+
+   --  Реализует Has_External_Effect (§1.7.0 порта).
+   procedure Resolve_External_Effect (Self : in out Notification) is
+   begin
+      Wake_All_With_Error (Self.Wait_Queue, Object_Destroyed);
+   end Resolve_External_Effect;
+
+--  --- doc lines 3396-3518 ---
+   Wait_Queue_Max_Waiters : constant := 1024;
+
+   protected type Wait_Queue_Instance is
+
+      --  Добавить текущий поток в очередь ожидания (промежуточное
+      --  состояние «готов к ожиданию, но ещё не спит»). Предотвращает
+      --  lost-wakeup: Scheduler_Wake_All после этой точки гарантированно
+      --  увидит поток.
+      procedure Prepare (Status : out Kernel_Error);
+
+      --  Отменить регистрацию без ухода в сон (сигнал пришёл до блокировки).
+      procedure Cancel;
+
+      --  T31: регистрация с общим Wait_Token для ожидания сразу на
+      --  нескольких источниках (Cap_Wait_Any, §10 порта). В отличие от
+      --  Prepare, пробуждение по любому из источников должно поднять один
+      --  и тот же поток ровно один раз — Token даёт планировщику общий
+      --  идентификатор для этого, тогда как Prepare лишь инкрементирует
+      --  счётчик без привязки к потоку.
+      procedure Prepare_With_Token
+        (Token : in out Wait_Token; Status : out Kernel_Error);
+
+   private
+      Waiter_Count : Interfaces.Unsigned_32 := 0;
+   end Wait_Queue_Instance;
+
+   protected body Wait_Queue_Instance is
+
+      procedure Prepare (Status : out Kernel_Error) is
+         Prev : constant Interfaces.Unsigned_32 := Waiter_Count;
+      begin
+         Waiter_Count := Waiter_Count + 1;
+         if Prev >= Wait_Queue_Max_Waiters then
+            Waiter_Count := Waiter_Count - 1;
+            Status := Max_Waiters;
+            return;
+         end if;
+         Status := Ok;
+      end Prepare;
+
+      procedure Cancel is
+      begin
+         Waiter_Count := Waiter_Count - 1;
+      end Cancel;
+
+      procedure Prepare_With_Token
+        (Token : in out Wait_Token; Status : out Kernel_Error)
+      is
+         Prev : constant Interfaces.Unsigned_32 := Waiter_Count;
+      begin
+         Waiter_Count := Waiter_Count + 1;
+         if Prev >= Wait_Queue_Max_Waiters then
+            Waiter_Count := Waiter_Count - 1;
+            Status := Max_Waiters;
+            return;
+         end if;
+         Register (Token, Wait_Queue_Instance'Unchecked_Access);
+         Status := Ok;
+      end Prepare_With_Token;
+
+   end Wait_Queue_Instance;
+
+   --  T31: общий токен ожидания для Cap_Wait_Any — текущий поток
+   --  регистрируется им сразу на всех источниках (§10 порта, фаза 2).
+   --  Обычные пробуждения через Scheduler_Block/Wake_All_With_Error идут
+   --  по потоку, привязанному к каждой Wait_Queue_Instance отдельно;
+   --  Signalled — единственное, что добавляет Wait_Token сверху: не даёт
+   --  фазе 3 спутать «нас разбудил источник X» с «мы сами ещё не легли
+   --  спать», если несколько источников сигналят почти одновременно между
+   --  Prepare_With_Token и Scheduler_Block.
+   protected type Wait_Token is
+
+      --  True, если хотя бы один источник уже сигналил после регистрации —
+      --  используется в фазе 3 Cap_Wait_Any, чтобы решить, идти ли в
+      --  Scheduler_Block вообще, или сигнал уже пришёл.
+      function Is_Signalled return Boolean;
+
+      --  Отмечает токен как сигналённый. Вызывается из того же пути, что
+      --  и обычное пробуждение по Wait_Queue_Instance (Wake_All_With_Error
+      --  / Notify), когда на очереди зарегистрирован токен, а не
+      --  одиночный поток.
+      procedure Mark_Signalled;
+
+   private
+      Signalled : Boolean := False;
+   end Wait_Token;
+
+   protected body Wait_Token is
+      function Is_Signalled return Boolean is (Signalled);
+      procedure Mark_Signalled is
+      begin
+         Signalled := True;
+      end Mark_Signalled;
+   end Wait_Token;
+
+   function Notification_Wait
+     (N : in out Notification) return Interfaces.Unsigned_64
+   is
+      Bits   : Interfaces.Unsigned_64;
+      Status : Kernel_Error;
+   begin
+      loop
+         N.Wait_Queue.Prepare (Status);
+         if Status /= Ok then
+            --  OPEN: обработка ошибки Prepare (Max_Waiters) не
+            --  специфицирована в Rust-версии для этого конкретного вызова
+            --  (сигнатура Rust-версии — Result<u64, KernelError>, но тело
+            --  использует `?` без явной обработки этой ветки отдельно от
+            --  общего возврата ошибки — перенесено как есть).
+            return 0;  --  заглушка результата; реальный код должен
+                        --  пробросить Status как ошибку вызывающему,
+                        --  см. OPEN выше
+         end if;
+
+         --  swap(0, Acquire) — атомарное чтение-и-обнуление.
+         Atomic_Swap_U64 (N.Pending'Address, 0, Bits);
+         if Bits /= 0 then
+            N.Wait_Queue.Cancel;
+            return Bits;
+         end if;
+         Scheduler_Block (N, N.Wait_Queue);
+      end loop;
+   end Notification_Wait;

@@ -1,0 +1,415 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 2511-2528 ---
+   --  SQE в shared memory — без поля seq. Атомарность копирования
+   --  обеспечена Flip_Cell (Aura.Io_Ring_Sqe ниже, эквивалент §A.2 порта).
+   type Sqe_Flags is mod 2 ** 32;
+
+   type Io_Ring_Sqe_Inner is record
+      Op_Code    : Io_Op_Code;
+      Flags      : Sqe_Flags;
+      Cap_Index  : Interfaces.Unsigned_16;
+      User_Data  : Interfaces.Unsigned_64;
+      Timeout_Ms : Interfaces.Unsigned_32;
+      Params     : Sqe_Params;
+   end record
+     with Convention => C;  --  эквивалент #[repr(C)] — обязателен, так как
+                              --  структура пересекает границу с userspace
+
+   --  Слот SQE в кольцевом буфере: Flip_Cell оборачивает внутреннее
+   --  содержимое. Userspace пишет через Write; ядро читает через Read
+   --  без retry-цикла (см. §5.4 порта).
+
+--  --- doc lines 2577-2579 ---
+   Io_Ring_Bitmap_Words_Max     : constant := 1024;
+   Io_Ring_Inflight_Capacity_Max : constant := 4096;
+
+
+--  --- doc lines 2581-2581 ---
+     (Index_Type => Natural, Element_Type => Interfaces.Unsigned_64);
+
+--  --- doc lines 2583-2608 ---
+     (Index_Type => Natural, Element_Type => Inflight_Sqe_Entry);
+
+   type Io_Ring is limited record
+      --  ABI-поля — layout пересекается с userspace, System.Address вместо
+      --  типизированного Ada-указателя, поскольку это буквально shared
+      --  memory протокол, а не внутренняя структура данных ядра.
+      Sq_Buffer         : System.Address;
+      Cq_Buffer         : System.Address;
+      Sq_Head           : System.Address;  --  *u32 в shared memory,
+                                             --  не atomic-тип Ada
+      Sq_Tail           : System.Address;
+      Cq_Head           : System.Address;
+      Cq_Visible_Tail   : System.Address;
+      Queue_Size_Mask   : Interfaces.Unsigned_32;
+      Sq_Poll_Thread    : Thread_Handle_Option;
+
+      --  Внутренние поля ядра (не ABI, обычные типизированные Ada-объекты):
+      Cq_Tail_Reserved    : aliased Interfaces.Unsigned_64;
+      Slot_Ready_Bitmap   : Bitmap_Vectors.Vector (Io_Ring_Bitmap_Words_Max);
+      Window_Words        : Interfaces.Unsigned_32;
+      Overflow_Count      : aliased Interfaces.Unsigned_64;
+      Inflight_Table      : Inflight_Vectors.Vector (Io_Ring_Inflight_Capacity_Max);
+      Inflight_Capacity   : Interfaces.Unsigned_32;
+      Default_Sqe_Timeout : Interfaces.Unsigned_32;
+   end record
+     with Volatile;
+
+--  --- doc lines 2618-2632 ---
+   function Read_Sqe (Ring : Io_Ring; Idx : Natural) return Io_Ring_Sqe_Inner
+   with
+     Global => null,
+     Import,  --  граница с shared memory — тело не выразимо в терминах
+              --  SPARK-доказуемого Ada; это внешняя точка платформы,
+              --  как и unsafe-блок в Rust-версии, honestly отмеченная,
+              --  а не обёрнутая в ложные контракты.
+     Convention => Ada;
+
+   --  Комментарий к реализации (не SPARK-проверяемый, платформенный слой):
+   --  slot := элемент по адресу Ring.Sq_Buffer + Idx * sizeof(Io_Ring_Sqe);
+   --  Sqe_Cells.Read (slot);
+   --  Обоснование действительности на весь срок жизни Io_Ring идентично
+   --  Rust-версии: буфер — массив Flip_Cell в shared memory, выделенной из
+   --  Untyped_Region (§4 порта), с тем же временем жизни, что сам Io_Ring.
+
+--  --- doc lines 2638-2687 ---
+   procedure Io_Ring_Advance_Visible_Tail
+     (Ring : in out Io_Ring; Slot_Ready : Interfaces.Unsigned_64)
+   is
+      Word     : Natural;
+      Bit      : Interfaces.Unsigned_64;
+      Cur      : Interfaces.Unsigned_64;
+      Cur_Word : Natural;
+      Cur_Bit  : Interfaces.Unsigned_64;
+      Next     : Interfaces.Unsigned_32;
+      Cas_Ok   : Boolean;
+   begin
+      Word := Natural ((Slot_Ready / 64) mod
+                         Interfaces.Unsigned_64 (Ring.Window_Words));
+      Bit  := Interfaces.Shift_Left (1, Natural (Slot_Ready mod 64));
+      Bitmap_Vectors.Replace_Element
+        (Ring.Slot_Ready_Bitmap, Word,
+         Bitmap_Vectors.Element (Ring.Slot_Ready_Bitmap, Word) or Bit);
+
+      loop
+         Cur := Interfaces.Unsigned_64
+           (Read_Volatile_U32 (Ring.Cq_Visible_Tail));
+         Cur_Word := Natural ((Cur / 64) mod
+                                Interfaces.Unsigned_64 (Ring.Window_Words));
+         Cur_Bit  := Interfaces.Shift_Left (1, Natural (Cur mod 64));
+
+         exit when (Bitmap_Vectors.Element (Ring.Slot_Ready_Bitmap, Cur_Word)
+                    and Cur_Bit) = 0;
+
+         Next := Interfaces.Unsigned_32 (Cur + 1);
+         --  CAS на Cq_Visible_Tail как атомарный u32 в shared memory —
+         --  граница платформы, аналогично Rust unsafe-блоку выше.
+         Atomic_Compare_Exchange_U32
+           (Ring.Cq_Visible_Tail, Interfaces.Unsigned_32 (Cur), Next, Cas_Ok);
+         if Cas_Ok then
+            Bitmap_Vectors.Replace_Element
+              (Ring.Slot_Ready_Bitmap, Cur_Word,
+               Bitmap_Vectors.Element (Ring.Slot_Ready_Bitmap, Cur_Word)
+                 and not Cur_Bit);
+         end if;
+      end loop;
+   end Io_Ring_Advance_Visible_Tail;
+
+   --  Платформенные примитивы для атомарного доступа к shared-memory u32 —
+   --  внешние точки, идентичные по роли unsafe-блокам Rust-версии:
+   function Read_Volatile_U32 (Addr : System.Address) return Interfaces.Unsigned_32
+     with Import, Convention => Ada;
+   procedure Atomic_Compare_Exchange_U32
+     (Addr : System.Address; Expected, Desired : Interfaces.Unsigned_32;
+      Success : out Boolean)
+     with Import, Convention => Ada;
+
+--  --- doc lines 2693-2699 ---
+   type Inflight_Sqe_Entry is record
+      User_Data        : Interfaces.Unsigned_64;
+      Deadline_At_Tick  : aliased Interfaces.Unsigned_64;  -- 0 = слот свободен
+      Target_Cap        : Erased_Cap;
+      Claimed           : aliased Boolean;
+   end record
+     with Volatile;
+
+--  --- doc lines 2709-2710 ---
+   Io_Batch_Max_Ops : constant := 32;
+
+
+--  --- doc lines 2712-2768 ---
+     (Index_Type => Positive, Element_Type => Io_Ring_Sqe_Access);
+
+   type Io_Batch is limited record
+      Targets : Batch_Target_Vectors.Vector (Io_Batch_Max_Ops);
+      Steps   : Io_Batch_Step_Array (1 .. Io_Batch_Max_Ops);
+      Count   : Natural;
+   end record;
+
+   function Io_Batch_Compile
+     (Sqes : Io_Ring_Sqe_Array) return Io_Batch
+   with Pre => Sqes'Length <= Io_Batch_Max_Ops;
+
+   --  3 шага плана, идентичные Rust-версии:
+   --  1. Взвести Begin_Write на всех целевых слотах батча.
+   --  2. Записать шаги последовательно.
+   --  3. Если ошибка на шаге i — откатить Begin_Write() на ВСЕХ уже
+   --     взведённых слотах через Abort_Write (ext-audit-05), не только
+   --     на слоте i.
+   function Io_Batch_Execute
+     (Ring : in out Io_Ring; Batch : Io_Batch) return Io_Batch_Result
+   is
+      Result : Io_Batch_Result;
+   begin
+      for I in 1 .. Batch.Count loop
+         Sqe_Cells.Begin_Write (Batch_Target_Vectors.Element
+                                   (Batch.Targets, I).all);
+      end loop;
+
+      for I in 1 .. Batch.Count loop
+         Execute_Step (Batch.Steps (I), Result.Step_Results (I));
+         if Result.Step_Results (I).Status /= Ok then
+            --  Откатываем Begin_Write на ВСЕХ уже взведённых слотах —
+            --  идентично исправлению ext-audit-05 в Rust-версии, не
+            --  только на текущем шаге.
+            for J in 1 .. Batch.Count loop
+               Sqe_Cells.Abort_Write
+                 (Batch_Target_Vectors.Element (Batch.Targets, J).all);
+            end loop;
+            Result.Failed_At := I;
+            return Result;
+         end if;
+         Sqe_Cells.Commit_Write
+           (Batch_Target_Vectors.Element (Batch.Targets, I).all,
+            Result.Step_Results (I).New_Value);
+      end loop;
+
+      Result.Failed_At := 0;  -- 0 = успех, без ошибок
+      return Result;
+   end Io_Batch_Execute;
+
+   function Io_Batch_Submit
+     (Ring : in out Io_Ring; Sqes : Io_Ring_Sqe_Array) return Io_Batch_Result
+   is
+      Batch : constant Io_Batch := Io_Batch_Compile (Sqes);
+   begin
+      return Io_Batch_Execute (Ring, Batch);
+   end Io_Batch_Submit;
+
+--  --- doc lines 2780-2799 ---
+   type Io_Template_Id is (<набор конкретных идентификаторов шаблонов,
+                             фиксированный на этапе компиляции ядра>);
+
+   type Template_Step is record
+      Op_Code : Io_Op_Code;
+      Params  : Sqe_Params;
+   end record;
+   --  Params здесь — фиксированные op_code + параметры, известные на этапе
+   --  компиляции; TemplateStep не привязан к слотам SQE-кольца, взводить
+   --  нечего — идентично честному комментарию, добавленному в Rust-версии
+   --  при внешнем аудите (ext-audit-06), см. ниже.
+
+   Template_Table : constant array (Io_Template_Id) of Template_Step := (...);
+
+   function Io_Template_Execute
+     (Ring     : in out Io_Ring;
+      Cap      : Combined_Rights_Cap;  --  мандат, покрывающий объединённые
+                                         --  права всех шагов шаблона
+      Template : Io_Template_Id) return Io_Batch_Result
+   with Pre => Contains (Cap.Rights, Combined_Rights_Of (Template));
+
+--  --- doc lines 2923-2997 ---
+   --  Сохранить снимок текущего контекста исполнения.
+   --  Вызывается через syscall Execution_Snapshot_Save.
+   procedure Execution_Snapshot_Save
+     (Thread_Cap : Thread_Manage_Ref; Status : out Kernel_Error)
+   with Pre => Contains (Thread_Cap.Rights, Manage);
+
+   procedure Execution_Snapshot_Save
+     (Thread_Cap : Thread_Manage_Ref; Status : out Kernel_Error)
+   is
+      T    : Thread renames Thread_Cap.Object.all;
+      Snap : Execution_Context_Snap;
+   begin
+      Status := Check_Valid (Thread_Cap);
+      if Status /= Ok then
+         return;
+      end if;
+      Snap := (Registers        => T.Exec_Ctx.Registers,
+                Stack_Ptr        => T.Exec_Ctx.Stack_Ptr,
+                Vspace_Phys_Root => T.Exec_Ctx.Bound_Vspace.Page_Table_Root,
+                Vspace_Ref       => Downgrade (T.Exec_Ctx.Bound_Vspace),
+                Fpu_State        => T.Exec_Ctx.Fpu_State);
+      --  Write под внешним локом (поток должен быть Suspended или Blocked) —
+      --  вызывающий код обязан это гарантировать, идентично Rust-версии.
+      Snap_Cells.Write (T.Exec_Snapshot, Snap);
+      T.Snapshot_Valid := True;
+      Status := Ok;
+   end Execution_Snapshot_Save;
+
+   --  Восстановить последний сохранённый снимок.
+   --  Читает активную сторону Flip_Cell напрямую — это и есть последний
+   --  снимок, записанный Execution_Snapshot_Save. Rollback здесь НЕ
+   --  используется (см. обоснование выше, идентичное ext-audit-04
+   --  Rust-версии). Если снимок невалиден или VSpace уже уничтожен —
+   --  возвращает ошибку.
+   procedure Execution_Snapshot_Restore
+     (Thread_Cap : Thread_Manage_Ref; Status : out Kernel_Error)
+   with Pre => Contains (Thread_Cap.Rights, Manage);
+
+   procedure Execution_Snapshot_Restore
+     (Thread_Cap : Thread_Manage_Ref; Status : out Kernel_Error)
+   is
+      T           : Thread renames Thread_Cap.Object.all;
+      Snap        : Execution_Context_Snap;
+      Vspace_Ok   : Boolean;
+      Vspace      : V_Space_Ref;
+   begin
+      Status := Check_Valid (Thread_Cap);
+      if Status /= Ok then
+         return;
+      end if;
+
+      if not T.Snapshot_Valid then
+         Status := Not_Found;
+         return;
+      end if;
+
+      Snap := Snap_Cells.Read (T.Exec_Snapshot);
+
+      --  Проверить что VSpace снимка ещё жив.
+      Upgrade (Snap.Vspace_Ref, Vspace, Vspace_Ok);
+      if not Vspace_Ok then
+         Status := Host_Vspace_Destroyed;
+         return;
+      end if;
+
+      --  Применить снимок к живому Exec_Ctx. Поток Suspended — Exec_Ctx не
+      --  читается планировщиком; это внешнее условие, которое вызывающий
+      --  код обязан гарантировать, идентично Rust-версии (там же — только
+      --  doc-комментарий SAFETY, не проверяемое компилятором условие).
+      T.Exec_Ctx.Registers    := Snap.Registers;
+      T.Exec_Ctx.Stack_Ptr    := Snap.Stack_Ptr;
+      T.Exec_Ctx.Bound_Vspace := Vspace;
+      T.Exec_Ctx.Fpu_State    := Snap.Fpu_State;
+      Status := Ok;
+   end Execution_Snapshot_Restore;
+
+--  --- doc lines 3017-3047 ---
+   type Reply_Object is limited record
+      Header         : Object_Header;
+      Waiting_Client : Thread_Ref;
+      Consumed       : aliased Boolean := False;
+   end record
+     with Volatile;
+
+   procedure Perform_Xpc_Reply
+     (Reply_Cap : Reply_Object_Write_Ref;  --  требует Write
+      Msg       : Byte_Array;
+      Status    : out Kernel_Error)
+   with Pre => Contains (Reply_Cap.Rights, Write);
+
+   procedure Perform_Xpc_Reply
+     (Reply_Cap : Reply_Object_Write_Ref;
+      Msg       : Byte_Array;
+      Status    : out Kernel_Error)
+   is
+      Cas_Ok : Boolean;
+   begin
+      --  compare_exchange(false, true) — атомарная проверка-и-установка,
+      --  идентично Rust-версии. Provalенный CAS даёт ReplyConsumed.
+      Atomic_Cas_Bool
+        (Reply_Cap.Object.Consumed'Address, False, True, Cas_Ok);
+      if not Cas_Ok then
+         Status := Reply_Consumed;
+         return;
+      end if;
+      Migrate_Execution_Context_Back
+        (Reply_Cap.Object.Waiting_Client, Msg, Status);
+   end Perform_Xpc_Reply;
+
+--  --- doc lines 3053-3064 ---
+   type Migration_Desc is record
+      Sequence      : Interfaces.Unsigned_64;
+      Client_Thread : Thread_Ref;
+      Target_Vspace : V_Space_Ref;
+      Entry_Point   : System.Storage_Elements.Integer_Address;
+      Msg_Addr      : System.Storage_Elements.Integer_Address;
+      Msg_Len       : Interfaces.Unsigned_32;
+      Sched_Ctx     : Sched_Ctx_Ref;
+   end record;
+
+   Activation_Gate_Capacity_Max : constant := 4096;
+
+
+--  --- doc lines 3066-3125 ---
+     (Index_Type => Natural, Element_Type => Migration_Desc_Option);
+     --  Migration_Desc_Option — эквивалент MaybeUninit<MigrationDesc>:
+     --  дискриминированная запись с полем Present : Boolean,
+     --  без обращения к неинициализированному значению до заполнения.
+
+   type Activation_Gate is limited record
+      Head              : aliased Interfaces.Unsigned_64;
+      Tail              : aliased Interfaces.Unsigned_64;
+      Capacity_Mask     : Interfaces.Unsigned_32;
+      Slot_Ready_Bitmap : Bitmap_Vectors.Vector (Io_Ring_Bitmap_Words_Max);
+      Occupied_Bitmap   : Bitmap_Vectors.Vector (Io_Ring_Bitmap_Words_Max);
+      Queue             : Migration_Slot_Vectors.Vector (Activation_Gate_Capacity_Max);
+      Expected_Sequence : aliased Interfaces.Unsigned_64;
+   end record
+     with Volatile;
+
+   type Shadow_Thread is limited record
+      Header             : Object_Header;
+      Exec_Ctx           : Execution_Context;
+      Sched_Ctx          : Sched_Ctx_Ref;
+      Associated_Client  : Thread_Ref;
+      Is_Active          : aliased Boolean;
+   end record
+     with Volatile;
+
+   --  SPSC по Sequence — Expected_Sequence не требует CAS. Перенесено с
+   --  исправлением 0.9 → 0.10, зафиксированным уже в Rust-версии:
+   --  "получатель отстал" (desc.Sequence > Expected) обрабатывается как
+   --  штатный кадр, а не отбрасывается — иначе Head не продвигался бы,
+   --  и слот оставался заблокирован навсегда. Единственный случай возврата
+   --  False после этой правки — desc.Sequence < Expected (повторная
+   --  доставка уже обработанного IPI).
+   function Verify_And_Advance_Sequence
+     (Gate : in out Activation_Gate; Desc : Migration_Desc) return Boolean
+   is
+      Expected : constant Interfaces.Unsigned_64 := Gate.Expected_Sequence;
+   begin
+      if Desc.Sequence < Expected then
+         --  Повторная доставка уже обработанного IPI — безопасно отбросить.
+         --  Head НЕ продвигается (единственный случай возврата False после
+         --  правки 0.10, идентично Rust-версии).
+         return False;
+      end if;
+
+      if Desc.Sequence > Expected then
+         --  [0.10, перенесено как есть] Получатель отстал: отправитель
+         --  прошёл оборот кольца и переписал слот(ы) новыми данными.
+         --  Версия 0.9 отбрасывала кадр (return False), но Head при этом
+         --  не продвигался, слот оставался заблокирован навсегда.
+         --  Исправление: обработать как штатный кадр, принять потерю
+         --  промежуточных дескрипторов (их отправители уже получили
+         --  ошибку занятости шлюза).
+         Gate.Expected_Sequence := Desc.Sequence + 1;
+         return True;
+      end if;
+
+      --  Штатный кадр: Desc.Sequence = Expected.
+      Gate.Expected_Sequence := Expected + 1;
+      return True;
+   end Verify_And_Advance_Sequence;

@@ -1,0 +1,36 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 5423-5446 ---
+   procedure Supervisor_Tick
+     (Contract : in out Reincarnation_Contract; Now : Interfaces.Unsigned_64)
+   is
+      New_Ctx : Process_Context_Ref;
+   begin
+      if Now - Contract.Last_Heartbeat_Tick
+           > Interfaces.Unsigned_64 (Contract.Heartbeat_Timeout_Ms)
+      then
+         if Contract.Restart_Count >= Contract.Max_Restarts then
+            Contract_Escalation (Contract);
+            Apply_Restart_Strategy (Contract, Forced => True);
+            return;
+         end if;
+
+         Kill_Process (Contract.Supervised, Contract.Respawn_Cap);
+         Respawn_From_Template
+           (Contract.Supervised, Contract.Respawn_Cap, New_Ctx);
+         Rebind_Namespace_Mounts (New_Ctx, Contract);
+         Contract.Supervised := New_Ctx;
+         Contract.Restart_Count := Contract.Restart_Count + 1;
+         Contract.Last_Heartbeat_Tick := Now;
+         Apply_Restart_Strategy (Contract, Forced => False);
+      end if;
+   end Supervisor_Tick;

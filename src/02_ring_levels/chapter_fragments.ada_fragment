@@ -1,0 +1,110 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 1672-1769 ---
+   function Current_Process_Ring return Ring_Level
+   with Global => null;
+
+   function Current_Process_Ring return Ring_Level is
+      --  Граница платформы: чтение текущего потока — идентично
+      --  unsafe-блоку Rust-версии (CURRENT_THREAD.as_ref()).
+      Th       : Thread_Access;
+      Th_Found : Boolean;
+   begin
+      Current_Thread_Ref (Th, Th_Found);
+      return (if Th_Found then Th.Ring_Level else Ring3);
+   end Current_Process_Ring;
+
+   --  Derive с проверкой ring constraint (fix-013).
+   generic
+      type Object_Type is new Kernel_Object with private;
+   procedure Cap_Derive_Checked
+     (Parent : Object_Manage_Ref;  --  требует Manage
+      Result : out Instance;
+      Status : out Kernel_Error)
+   with Pre => Contains (Parent.Rights, Manage);
+
+   procedure Cap_Derive_Checked
+     (Parent : Object_Manage_Ref;
+      Result : out Instance;
+      Status : out Kernel_Error)
+   is
+      Obj_Min_Ring : Ring_Level;
+      Caller_Ring  : Ring_Level;
+      Check_Status : Kernel_Error;
+   begin
+      Check_Status := Check_Valid (Parent);
+      if Check_Status /= Ok then
+         Status := Check_Status;
+         return;
+      end if;
+      Obj_Min_Ring := Parent.Object.Header.Min_Ring;
+      Caller_Ring  := Current_Process_Ring;
+      --  Ring_Level'Enum_Rep сравнивает по аппаратному числовому CPL
+      --  (Ring0 => 0, Ring3 => 3, см. representation clause выше), не
+      --  по порядковому индексу перечисления — идентично Rust `as u8`
+      --  сравнению, которое использует явно заданные дискриминанты.
+      if Ring_Level'Enum_Rep (Caller_Ring)
+           > Ring_Level'Enum_Rep (Obj_Min_Ring)
+      then
+         Status := Ring_Violation;
+         return;
+      end if;
+      Cap_Derive_Unchecked (Parent, Result, Status);
+   end Cap_Derive_Checked;
+
+   --  OPEN: Cap_Derive_Unchecked используется, но её тело не
+   --  специфицировано по существу в Rust-версии за пределами общего
+   --  механизма derive, уже описанного в §1.6 порта (Cap_Mint) — порт не
+   --  добавляет отдельную недостающую реализацию сверх того, что уже
+   --  открыто там.
+   generic
+      type Object_Type is new Kernel_Object with private;
+   procedure Cap_Derive_Unchecked
+     (Parent : Object_Manage_Ref; Result : out Instance; Status : out Kernel_Error)
+   with Import;
+
+   --  Ужесточить доступ к объекту: поднять Min_Ring до более высокого
+   --  уровня. Операция необратима. Более высокий числовой уровень =
+   --  строже (Ring3 строже Ring0). С двумя уровнями это единственный
+   --  содержательный переход: Ring0 → Ring3 (объект, изначально
+   --  доступный из kernel, закрывается для userspace).
+   generic
+      type Object_Type is new Kernel_Object with private;
+   procedure Cap_Promote_Ring
+     (Cap         : Object_Manage_Ref;  --  требует Manage
+      Target_Ring : Ring_Level;
+      Status      : out Kernel_Error)
+   with Pre => Contains (Cap.Rights, Manage);
+
+   procedure Cap_Promote_Ring
+     (Cap         : Object_Manage_Ref;
+      Target_Ring : Ring_Level;
+      Status      : out Kernel_Error)
+   is
+      Current      : Ring_Level;
+      Check_Status : Kernel_Error;
+   begin
+      Check_Status := Check_Valid (Cap);
+      if Check_Status /= Ok then
+         Status := Check_Status;
+         return;
+      end if;
+      Current := Cap.Object.Header.Min_Ring;
+      if Ring_Level'Enum_Rep (Target_Ring) <= Ring_Level'Enum_Rep (Current)
+      then
+         --  target не строже current → демоция запрещена.
+         Status := Ring_Demotion;
+         return;
+      end if;
+      Cap.Object.Header.Min_Ring := Target_Ring;
+      Status := Ok;
+   end Cap_Promote_Ring;

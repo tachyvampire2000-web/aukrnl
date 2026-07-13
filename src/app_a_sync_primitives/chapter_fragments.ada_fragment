@@ -1,0 +1,28 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 282-283 ---
+generic
+   type Element_Type is private;
+
+--  --- doc lines 375-376 ---
+generic
+   type Element_Type is private;
+
+--  --- doc lines 467-469 ---
+generic
+   type Element_Type is private;
+   Max_Cpus : Positive;
+
+--  --- doc lines 509-511 ---
+generic
+   type Element_Type is private;
+   Capacity : Positive := 65536;  --  CDT_CAPACITY из Rust-версии

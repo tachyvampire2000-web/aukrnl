@@ -1,0 +1,270 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 1780-1783 ---
+with Aura.Object; use Aura.Object;
+with Aura.Cap_Node; use Aura.Cap_Node;
+with Aura.Attr; use Aura.Attr;
+
+
+--  --- doc lines 1837-1859 ---
+   type Ns_Mount_Flags is mod 2 ** 32;
+   Readonly  : constant Ns_Mount_Flags := 16#01#;
+   Propagate : constant Ns_Mount_Flags := 16#02#;
+   Ephemeral : constant Ns_Mount_Flags := 16#04#;
+
+   procedure Ns_Mount
+     (Target_Process : Process_Context_Ref;
+      Target_Parent  : in out Namespace_Node;
+      Name           : String;
+      Source         : Namespace_Cap;       --  требует Mount,
+                                              --  эквивалент impl HasMount
+      Priority       : Interfaces.Unsigned_32;
+      As_Union       : Boolean;
+      Lease_Ms       : Interfaces.Unsigned_32;
+      Flags          : Ns_Mount_Flags;
+      Status         : out Kernel_Error)
+   with Pre => Contains (Source.Rights, Mount)
+               and then Name'Length <= Namespace_Name_Max;
+   --  OPEN (портировано из todo!() Rust-версии, §3.3): тело не реализовано.
+   --  Три шага из плана Rust-версии переносятся как комментарий:
+   --    1. Проверка квоты Mounts_Since_Last_Prune.
+   --    2. Создание нового Namespace_Node с производным мандатом.
+   --    3. Запись Mount_Log_Entry (§10 порта).
+
+--  --- doc lines 1875-1876 ---
+   type Cap_Token_Status is (Valid, Revoked);
+
+
+--  --- doc lines 1878-1957 ---
+     (Key_Type => Interfaces.Unsigned_64, Value_Type => Cap_Token_Status,
+      Capacity => 65536);
+
+   protected type Cap_Token_Registry is
+      procedure Lookup
+        (Token : Interfaces.Unsigned_64;
+         Status : out Cap_Token_Status; Found : out Boolean);
+      procedure Insert (Token : Interfaces.Unsigned_64; Status : Cap_Token_Status);
+   private
+      Inner : Cap_Token_Maps.Instance;
+   end Cap_Token_Registry;
+
+   --  T62: квота мандатов на процесс. Ограничивает число одновременно
+   --  живых Capability в CSpace процесса.
+   protected type Cap_Quota (Limit : Interfaces.Unsigned_32) is
+
+      --  Зарезервировать слот под новый мандат.
+      procedure Acquire (Status : out Kernel_Error);
+
+      --  Освободить слот при revoke/destroy мандата. Насыщающий декремент —
+      --  идентично Rust saturating_sub(1).
+      procedure Release;
+
+      function Remaining return Interfaces.Unsigned_32;
+
+   private
+      Used : Interfaces.Unsigned_32 := 0;
+   end Cap_Quota;
+
+   Cap_Quota_Default : constant := 4096;
+   Cap_Quota_Max      : constant := 65536;
+
+   --  Квота встраивается в Process_Context (не отдельный объект ядра —
+   --  внутреннее поле, не capability). Cap_Mint проверяет Acquire перед
+   --  вставкой в CDT; Cap_Revoke вызывает Release после удаления из CDT.
+
+   type Lease_Entry is limited record
+      Derived               : Cap_Node_Weak_Ref;
+      Lease_Expires_At_Tick  : aliased Interfaces.Unsigned_64;
+      Lease_Duration_Ms      : Interfaces.Unsigned_32;
+      Origin_Object          : Kernel_Object_Weak_Ref;
+      Origin_Creation_Epoch  : Interfaces.Unsigned_32;
+      Origin_Obj_Epoch       : Interfaces.Unsigned_32;
+      Origin_Cap_Token       : Interfaces.Unsigned_64;
+   end record
+     with Volatile;
+
+   procedure Lease_Renew
+     (Lease  : in out Lease_Entry;
+      New_Ms : Interfaces.Unsigned_32;
+      Status : out Kernel_Error)
+   is
+      Obj        : Kernel_Object_Ref;
+      Obj_Alive  : Boolean;
+      Tok_Status : Cap_Token_Status;
+      Tok_Found  : Boolean;
+   begin
+      --  1. Проверка Object_Epoch
+      Upgrade (Lease.Origin_Object, Obj, Obj_Alive);
+      if not Obj_Alive then
+         Status := Origin_Revoked;
+         return;
+      end if;
+      if Lease.Origin_Obj_Epoch /= Obj.Header.Epoch then
+         Status := Origin_Revoked;
+         return;
+      end if;
+
+      --  2. Проверка Cap_Token
+      Cap_Token_Registry_Instance.Lookup
+        (Lease.Origin_Cap_Token, Tok_Status, Tok_Found);
+      if not Tok_Found or else Tok_Status = Revoked then
+         Status := Origin_Revoked;
+         return;
+      end if;
+
+      Lease.Lease_Expires_At_Tick :=
+        Current_Tick + Ms_To_Ticks (Interfaces.Unsigned_64 (New_Ms));
+      Status := Ok;
+   end Lease_Renew;
+
+--  --- doc lines 1963-1985 ---
+   Namespace_Path_Max_Depth : constant := 64;
+
+   function Would_Create_Cycle
+     (Target_Parent : Namespace_Node; Source : Namespace_Node) return Boolean
+   is
+      Node  : Namespace_Node_Access := Target_Parent'Unrestricted_Access;
+      Depth : Natural := 0;
+   begin
+      loop
+         exit when Node = null;
+         if Node.all'Address = Source'Address then
+            return True;
+         end if;
+         Depth := Depth + 1;
+         exit when Depth > Namespace_Path_Max_Depth;  --  fail-safe: не даём
+                                                         --  уйти в бесконечный
+                                                         --  обход при
+                                                         --  повреждённой
+                                                         --  структуре
+         Node := Upgrade (Node.Parent);
+      end loop;
+      return False;
+   end Would_Create_Cycle;
+
+--  --- doc lines 2069-2130 ---
+     (Key_Type   => Layer_Key,   --  (Layer_Kind, Bounded_String)
+      Value_Type => Slot_Id,
+      Capacity   => 4096);
+
+   protected type Layer_Registry is
+      procedure Contains (Kind : Layer_Kind; Id : String; Found : out Boolean);
+      procedure Insert (Kind : Layer_Kind; Id : String; Slot : Slot_Id);
+      procedure Remove (Kind : Layer_Kind; Id : String);
+   private
+      Inner : Layer_Keys.Instance;
+   end Layer_Registry;
+
+   procedure Layer_Create
+     (Registry : in out Layer_Registry;
+      Kind     : Layer_Kind;
+      Id       : String;
+      Backend  : Layer_Backend;
+      Result   : out Layer_Manage_Ref;
+      Status   : out Kernel_Error)
+   is
+      Found : Boolean;
+   begin
+      Registry.Contains (Kind, Id, Found);
+      if Found then
+         Status := Already_Exists;
+         return;
+      end if;
+      --  Аллокация слота, конструирование Layer, регистрация — механически
+      --  идентично Rust-версии (Arc::new + reg.insert + cap_mint_root).
+      Layer_Create_Body (Registry, Kind, Id, Backend, Result, Status);
+   end Layer_Create;
+
+   --  Detach слоя: помечает Detached, освобождает слот для переиспользования.
+   --  Новый Layer с тем же (Kind, Id) получит новый Slot с новым поколением —
+   --  старые мандаты на этот Layer корректно вернут Revoked через инвариант
+   --  Slot_Map (идентично Rust-версии).
+   procedure Layer_Detach
+     (Registry : in out Layer_Registry;
+      Layer_Cap : Layer_Manage_Ref;
+      Status    : out Kernel_Error)
+   with Pre => Contains (Layer_Cap.Rights, Manage);
+
+   --  ИСПРАВЛЕНО при повторном аудите порта на вымывание: первая версия
+   --  этого документа переносила только сигнатуру с Pre-контрактом, без
+   --  тела — хотя Layer_Detach была полностью специфицирована уже в
+   --  Rust-версии (не todo!()). Восстановлено дословно.
+   procedure Layer_Detach
+     (Registry  : in out Layer_Registry;
+      Layer_Cap : Layer_Manage_Ref;
+      Status    : out Kernel_Error)
+   is
+      Check_Status : constant Kernel_Error := Check_Valid (Layer_Cap);
+   begin
+      if Check_Status /= Ok then
+         Status := Check_Status;
+         return;
+      end if;
+      Layer_Cap.Object.State := Detached;
+      Registry.Remove (Layer_Cap.Object.Kind, Layer_Cap.Object.Id);
+      Layer_Slots_Remove (Layer_Cap.Object.Slot);
+      Status := Ok;
+   end Layer_Detach;
+
+--  --- doc lines 2157-2208 ---
+   procedure Im_Compose
+     (Target_Parent : in out Namespace_Node;
+      Layers        : Layer_Read_Cap_Array;  --  требует Read на каждый,
+                                                --  эквивалент impl HasRead
+      Mount_Path    : String;
+      Status        : out Kernel_Error)
+   is
+      Base_Priority : constant Interfaces.Unsigned_32 :=
+        Interfaces.Unsigned_32 (Layers'Length);
+      Valid_Check   : Boolean;
+   begin
+      if Layers'Length = 0 then
+         Status := Invalid_Argument;
+         return;
+      end if;
+
+      for I in Layers'Range loop
+         --  Невалидный/отозванный мандат — слой пропускается, не блокирует
+         --  сборку. Идентично Rust-версии.
+         Valid_Check := Check_Valid (Layers (I)) = Ok;
+         if Valid_Check then
+            --  Detached Mount-слой — пропускается так же, как невалидный
+            --  мандат.
+            if Layers (I).Object.State /= Detached then
+               declare
+                  Priority : constant Interfaces.Unsigned_32 :=
+                    Base_Priority - Interfaces.Unsigned_32 (I - Layers'First);
+               begin
+                  Ns_Mount
+                    (Current_Process, Target_Parent, Mount_Path,
+                     --  OPEN (портировано из todo!() Rust-версии, §3.4.3):
+                     --  "source derived from layer backend" — вывод
+                     --  Namespace_Cap из Layer_Backend не специфицирован
+                     --  ни в Rust-документе, ни здесь.
+                     Derive_Source_From_Backend (Layers (I).Object.Backend),
+                     Priority, As_Union => True, Lease_Ms => 0,
+                     Flags => 0, Status => Status);
+                  if Status /= Ok then
+                     return;
+                  end if;
+               end;
+            end if;
+         end if;
+      end loop;
+      Status := Ok;
+   end Im_Compose;
+
+   --  OPEN (портировано из todo!() Rust-версии): вывод Namespace_Cap
+   --  из Layer_Backend — не реализовано ни в исходном документе, ни здесь.
+   function Derive_Source_From_Backend
+     (Backend : Layer_Backend) return Namespace_Cap
+   with Import;  --  явно помечено как нереализованная внешняя точка

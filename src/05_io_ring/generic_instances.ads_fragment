@@ -1,0 +1,21 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Инстанциации generic-пакетов, встречающиеся в этой главе документа
+--  вне какого-либо из его именованных пакетов верхнего уровня.
+
+   package Sqe_Cells is new Aura.Flip_Cell (Io_Ring_Sqe_Inner);
+
+   package Bitmap_Vectors is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Natural, Element_Type => Interfaces.Unsigned_64);
+
+   package Inflight_Vectors is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Natural, Element_Type => Inflight_Sqe_Entry);
+
+   package Batch_Target_Vectors is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Positive, Element_Type => Io_Ring_Sqe_Access);
+
+   package Migration_Slot_Vectors is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Natural, Element_Type => Migration_Desc_Option);

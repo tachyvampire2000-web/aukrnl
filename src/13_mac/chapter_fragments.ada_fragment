@@ -1,0 +1,216 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 4617-4680 ---
+   --  MAC Write Policy в AURA: Strict Equality.
+   --  Процесс с Clearance N может писать ТОЛЬКО в объекты с Label = N.
+   --  Если нужен стандартный BLP: заменить "/=" на "<".
+   generic
+      type Object_Type is new Kernel_Object with private;
+   function Mac_Derive_Write_Cap
+     (Requester_Clearance : Clearance;
+      Object_Label        : Mandatory_Label;
+      Object_Cap          : Object_Manage_Ref;  --  требует Manage
+      Result              : out Object_Write_Ref;
+      Status              : out Kernel_Error)
+   with Pre => Contains (Object_Cap.Rights, Manage);
+
+   function Mac_Derive_Write_Cap
+     (Requester_Clearance : Clearance;
+      Object_Label        : Mandatory_Label;
+      Object_Cap          : Object_Manage_Ref;
+      Result              : out Object_Write_Ref;
+      Status              : out Kernel_Error)
+   is
+   begin
+      if Object_Label.Level /= Requester_Clearance.Level then
+         Status := Write_Down_Violation;
+         return;
+      end if;
+      if (Requester_Clearance.Categories and Object_Label.Categories)
+           /= Object_Label.Categories
+      then
+         Status := Category_Mismatch;
+         return;
+      end if;
+      Cap_Derive_Write (Object_Cap, Result, Status);
+   end Mac_Derive_Write_Cap;
+
+   generic
+      type Object_Type is new Kernel_Object with private;
+   function Mac_Derive_Read_Cap
+     (Requester_Clearance : Clearance;
+      Object_Label        : Mandatory_Label;
+      Object_Cap          : Object_Manage_Ref;
+      Result              : out Object_Read_Ref;
+      Status              : out Kernel_Error)
+   with Pre => Contains (Object_Cap.Rights, Manage);
+
+   function Mac_Derive_Read_Cap
+     (Requester_Clearance : Clearance;
+      Object_Label        : Mandatory_Label;
+      Object_Cap          : Object_Manage_Ref;
+      Result              : out Object_Read_Ref;
+      Status              : out Kernel_Error)
+   is
+   begin
+      if Object_Label.Level > Requester_Clearance.Level then
+         Status := Read_Up_Violation;
+         return;
+      end if;
+      if (Requester_Clearance.Categories and Object_Label.Categories)
+           /= Object_Label.Categories
+      then
+         Status := Category_Mismatch;
+         return;
+      end if;
+      Cap_Derive_Read (Object_Cap, Result, Status);
+   end Mac_Derive_Read_Cap;
+
+--  --- doc lines 4693-4777 ---
+   --  Метка целостности — параллельна Mandatory_Label (конфиденциальность).
+   --  Хранится отдельным атрибутом namespace-ноды; Strong Tranquility
+   --  (T54 порта) применима и здесь.
+   type Integrity_Label is record
+      Level      : Interfaces.Unsigned_8;   -- 0–63, 63 = наивысший
+      Categories : Interfaces.Unsigned_64;
+   end record
+     with Convention => C;
+
+   type Integrity_Clearance is record
+      Level      : Interfaces.Unsigned_8;
+      Categories : Interfaces.Unsigned_64;
+   end record
+     with Convention => C;
+
+   --  Новые коды ошибок для Biba (уже в Kernel_Error, §14 порта):
+   --  Write_Up_Violation  = -104 (процесс пишет в объект с более высокой
+   --                               целостностью)
+   --  Read_Down_Violation = -105 (процесс читает объект с более низкой
+   --                               целостностью)
+
+   --  Biba Write Policy: процесс не может писать в объект с БОЛЕЕ
+   --  ВЫСОКОЙ целостностью. «No Write Up» — низкая целостность не
+   --  повышает высокую.
+   generic
+      type Object_Type is new Kernel_Object with private;
+   function Biba_Derive_Write_Cap
+     (Requester : Integrity_Clearance;
+      Object    : Integrity_Label;
+      Cap       : Object_Manage_Ref;  --  требует Manage
+      Result    : out Object_Write_Ref;
+      Status    : out Kernel_Error)
+   with Pre => Contains (Cap.Rights, Manage);
+
+   function Biba_Derive_Write_Cap
+     (Requester : Integrity_Clearance;
+      Object    : Integrity_Label;
+      Cap       : Object_Manage_Ref;
+      Result    : out Object_Write_Ref;
+      Status    : out Kernel_Error)
+   is
+   begin
+      if Object.Level > Requester.Level then
+         Status := Write_Up_Violation;
+         return;
+      end if;
+      if (Requester.Categories and Object.Categories) /= Object.Categories
+      then
+         Status := Category_Mismatch;
+         return;
+      end if;
+      Cap_Derive_Write (Cap, Result, Status);
+   end Biba_Derive_Write_Cap;
+
+   --  Biba Read Policy: процесс не может читать объект с БОЛЕЕ НИЗКОЙ
+   --  целостностью. «No Read Down» — чтение грязных данных запрещено.
+   generic
+      type Object_Type is new Kernel_Object with private;
+   function Biba_Derive_Read_Cap
+     (Requester : Integrity_Clearance;
+      Object    : Integrity_Label;
+      Cap       : Object_Manage_Ref;
+      Result    : out Object_Read_Ref;
+      Status    : out Kernel_Error)
+   with Pre => Contains (Cap.Rights, Manage);
+
+   function Biba_Derive_Read_Cap
+     (Requester : Integrity_Clearance;
+      Object    : Integrity_Label;
+      Cap       : Object_Manage_Ref;
+      Result    : out Object_Read_Ref;
+      Status    : out Kernel_Error)
+   is
+   begin
+      if Object.Level < Requester.Level then
+         Status := Read_Down_Violation;
+         return;
+      end if;
+      if (Requester.Categories and Object.Categories) /= Object.Categories
+      then
+         Status := Category_Mismatch;
+         return;
+      end if;
+      Cap_Derive_Read (Cap, Result, Status);
+   end Biba_Derive_Read_Cap;
+
+--  --- doc lines 4796-4846 ---
+   type Object_Kind is
+     (Thread_Kind, Vspace_Kind, Channel_Kind, Audit_Channel_Kind,
+      Causal_Root_Kind, Namespace_Kind);
+   for Object_Kind'Size use 8;
+
+   type Audit_Action is (Cap_Derive, Cap_Revoke, Read_Action, Write_Action,
+                           Exec_Action);
+   for Audit_Action'Size use 8;
+
+   type Audit_Verdict is (Allow, Deny);
+   for Audit_Verdict'Size use 8;
+
+   type Audit_Record is record
+      Tick        : Interfaces.Unsigned_64;
+      Thread_Id    : Interfaces.Unsigned_64;
+      Object_Idx   : Interfaces.Unsigned_32;
+      Object_Gen    : Interfaces.Unsigned_32;
+      Object_Type   : Object_Kind;
+      Action        : Audit_Action;
+      Verdict       : Audit_Verdict;
+      Label         : Mandatory_Label;
+      Clearance     : Aura.Mac.Clearance;
+   end record;
+
+   Audit_Ring_Capacity : constant := 4096;
+
+   type Audit_Record_Option (Present : Boolean := False) is record
+      case Present is
+         when True  => Value : Audit_Record;
+         when False => null;
+      end case;
+   end record;
+
+   type Audit_Record_Array is array (0 .. Audit_Ring_Capacity - 1)
+     of Audit_Record_Option;
+
+   type Audit_Ring_Buffer is limited record
+      Buf       : Audit_Record_Array;
+      Write_Idx : Natural range 0 .. Audit_Ring_Capacity - 1 := 0;
+      Lost      : Interfaces.Unsigned_64 := 0;
+   end record;
+
+   procedure Push (Self : in out Audit_Ring_Buffer; Rec : Audit_Record) is
+   begin
+      if Self.Buf (Self.Write_Idx).Present then
+         Self.Lost := Self.Lost + 1;
+      end if;
+      Self.Buf (Self.Write_Idx) := (Present => True, Value => Rec);
+      Self.Write_Idx := (Self.Write_Idx + 1) mod Audit_Ring_Capacity;
+   end Push;
+

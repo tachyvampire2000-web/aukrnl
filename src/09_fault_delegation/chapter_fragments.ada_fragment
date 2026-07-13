@@ -1,0 +1,44 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 3755-3786 ---
+   procedure Handle_Page_Fault
+     (Fault_Addr : Interfaces.Unsigned_64; Pc : Interfaces.Unsigned_64)
+   is
+      Binding      : Secure_Binding_Access;
+      Has_Binding  : Boolean;
+      Vspace       : V_Space_Ref;
+      Fault_Ep     : Fault_Endpoint_Access;
+      Has_Ep       : Boolean;
+      Lookup_Found : Boolean;
+   begin
+      Vspace_Get_Secure_Binding (Current_Vspace, Binding, Has_Binding);
+      if Has_Binding then
+         --  Платформенный вызов — граница платформы, идентичная
+         --  unsafe-блоку Rust-версии.
+         Platform_Call_Fault_Handler
+           (Binding.Handler_Va, Binding.Stack_Va, Fault_Addr, Pc);
+         return;
+      end if;
+
+      Vspace := Current_Thread.Exec_Ctx.Bound_Vspace;
+      Upgrade (Current_Thread.Fault_Endpoint, Fault_Ep, Has_Ep);
+
+      Platform_Page_Table_Lookup
+        (Vspace.Page_Table_Root, Fault_Addr, Lookup_Found);
+      if not Lookup_Found then
+         if Has_Ep then
+            Deliver_Fault_To_Handler (Fault_Ep.all, Fault_Addr, Pc);
+         else
+            Terminate_Current_Thread (Access_Violation);
+         end if;
+      end if;
+   end Handle_Page_Fault;

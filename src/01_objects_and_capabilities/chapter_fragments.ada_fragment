@@ -1,0 +1,394 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 718-719 ---
+with Aura.Rights; use Aura.Rights;
+
+
+--  --- doc lines 783-787 ---
+with Aura.Rights; use Aura.Rights;
+with Aura.Cap_Node; use Aura.Cap_Node;
+
+generic
+   type Object_Type is new Kernel_Object with private;
+
+--  --- doc lines 829-831 ---
+generic
+   type Element_Type (<>) is limited private;
+   type Element_Access is access Element_Type;
+
+--  --- doc lines 875-875 ---
+subtype Thread_Weak_Ref is Thread_Weak_Ref_Base.Instance;
+
+--  --- doc lines 931-931 ---
+subtype Device_Object_Ref is Device_Object_Capability.Instance;
+
+--  --- doc lines 962-963 ---
+with Ada.Finalization;
+
+
+--  --- doc lines 984-985 ---
+
+subtype Cap_Object_Ref is Aura.Cap_Object_Ref_Pkg.Instance;
+
+--  --- doc lines 1078-1082 ---
+with Aura.Object; use Aura.Object;
+with Aura.Rights; use Aura.Rights;
+
+generic
+   type Object_Type is new Kernel_Object with private;
+
+--  --- doc lines 1166-1222 ---
+   function Cdt_Max_Depth return Interfaces.Unsigned_32 is (32);
+
+   procedure Cap_Mint_Temporal
+     (Parent      : Instance;
+      Valid_From  : Interfaces.Unsigned_64;
+      Valid_Until : Interfaces.Unsigned_64;
+      Result      : out Instance;
+      Status      : out Kernel_Error)
+   with
+     Pre  => Contains (Parent.Rights, Grant),  --  эквивалент R: HasGrant
+     Post => (if Status = Ok then
+                Result.Node.Valid_From = Valid_From
+                and then Result.Node.Valid_Until = Valid_Until);
+
+   procedure Cap_Mint_Temporal
+     (Parent      : Instance;
+      Valid_From  : Interfaces.Unsigned_64;
+      Valid_Until : Interfaces.Unsigned_64;
+      Result      : out Instance;
+      Status      : out Kernel_Error)
+   is
+      Node_Status : Kernel_Error;
+   begin
+      --  ИСПРАВЛЕНО (найдено при повторном аудите на вымывание, не было
+      --  в первой версии порта): Rust-версия проверяет валидность
+      --  родителя И явно отклоняет некорректное временное окно —
+      --  первая версия этого порта переносила только Pre-контракт на
+      --  Grant и пропускала обе эти проверки. Восстановлено дословно.
+      Status := Check_Valid (Parent);
+      if Status /= Ok then
+         return;
+      end if;
+      if Valid_Until /= 0 and then Valid_Until <= Valid_From then
+         Status := Invalid_Argument;
+         return;
+      end if;
+
+      --  OPEN (не портировано — сама Rust-версия здесь зависит от
+      --  функции Cap_Mint_Node, которая вызывается на строке 1036
+      --  Rust-документа, но нигде в исходном документе не определена;
+      --  это открытый пункт самой Rust-спеки, отдельный от её
+      --  явных todo!(), и порт не восполняет его самостоятельно):
+      Cap_Mint_Node (Parent, Node_Status, Result);
+      if Node_Status /= Ok then
+         Status := Node_Status;
+         return;
+      end if;
+      Result.Node.Valid_From := Valid_From;
+      Result.Node.Valid_Until := Valid_Until;
+      Status := Ok;
+   end Cap_Mint_Temporal;
+
+   --  OPEN: см. комментарий в теле Cap_Mint_Temporal выше — эта функция
+   --  вызывается, но не специфицирована уже в Rust-версии.
+   procedure Cap_Mint_Node
+     (Parent : Instance; Status : out Kernel_Error; Result : out Instance)
+   with Import;
+
+--  --- doc lines 1228-1264 ---
+   procedure Cap_Mint
+     (Parent    : Instance;
+      Requested : Mask;
+      Result    : out Instance;
+      Status    : out Kernel_Error)
+   with
+     Pre => Contains (Parent.Rights, Grant);  --  эквивалент R: HasGrant
+   --  OPEN (портировано из todo!() Rust-версии, §1.6): тело — CAS-вставка
+   --  в First_Child узла CDT с повторной проверкой Revoke_In_Progress после
+   --  вставки — не реализовано ни в Rust-документе, ни здесь. Проверки
+   --  на входе (Contains rights, глубина CDT, revoke-в-процессе) портированы
+   --  как контракт/явные шаги ниже, тело CAS-вставки остаётся открытым.
+
+   procedure Cap_Mint_Body
+     (Parent    : Instance;
+      Requested : Mask;
+      Result    : out Instance;
+      Status    : out Kernel_Error)
+   is
+   begin
+      if not Contains (Parent.Node.Rights_Mask, Requested) then
+         Status := Bad_Rights;
+         return;
+      end if;
+      if Parent.Node.Depth + 1 > Cdt_Max_Depth then
+         Status := Cdt_Too_Deep;
+         return;
+      end if;
+      if Parent.Node.Revoke_In_Progress then
+         Status := Parent_Revoking;
+         return;
+      end if;
+      --  OPEN: CAS-вставка в First_Child, повторная проверка
+      --  Revoke_In_Progress — как и в Rust-версии (todo!()).
+      Status := Not_Supported;  --  явный маркер "не реализовано", а не
+                                  --  тихий успех
+   end Cap_Mint_Body;
+
+--  --- doc lines 1275-1277 ---
+   type Has_External_Effect is interface and Kernel_Object;
+
+   procedure Resolve_External_Effect (Self : Has_External_Effect) is abstract;
+
+--  --- doc lines 1297-1327 ---
+   type Sanitize is interface and Kernel_Object;
+
+   --  Обнулить все Flip_Cell-поля объекта. Вызывается ДО epoch bump,
+   --  пока объект ещё доступен — идентично порядку операций в Rust-версии.
+   procedure Sanitize_Fields (Self : Sanitize) is abstract;
+
+   --  Зачистка одной Flip_Cell — обе стороны, атомарно.
+   --  Rust использует write_volatile, чтобы компилятор не выкинул как
+   --  dead store; Ada-эквивалент — запись через Volatile-типизированное
+   --  поле (см. §A.2 Flip_Cell — тип Instance уже помечен Volatile),
+   --  что даёт тот же эффект без отдельного вызова, аналогичного
+   --  ptr::write_volatile.
+   generic
+      type Element_Type is private;
+      with package Cell is new Aura.Flip_Cell (Element_Type);
+   procedure Flip_Cell_Zeroize (Self : in out Cell.Instance; Zero : Element_Type);
+
+   procedure Object_Destroy (Obj : in out Cap_Object_Ref)
+     with Post => not Obj.Is_Valid;
+
+   procedure Object_Destroy_Sanitized (Obj : in out Cap_Object_Ref)
+     with Pre  => Obj.Is_Sanitizable,   --  ghost-предикат: объект реализует Sanitize
+          Post => not Obj.Is_Valid;
+
+   procedure Object_Destroy_With_Effect (Obj : in out Cap_Object_Ref)
+     with Pre  => Obj.Has_External_Effect,
+          Post => not Obj.Is_Valid;
+
+   procedure Object_Destroy_With_Effect_Sanitized (Obj : in out Cap_Object_Ref)
+     with Pre  => Obj.Has_External_Effect and then Obj.Is_Sanitizable,
+          Post => not Obj.Is_Valid;
+
+--  --- doc lines 1346-1347 ---
+   Cdt_Max_Revoke_Depth : constant := 1024;
+
+
+--  --- doc lines 1349-1415 ---
+     (Index_Type => Positive, Element_Type => Cap_Id);
+   subtype Revoke_Stack is Revoke_Stacks.Vector (Cdt_Max_Revoke_Depth);
+
+   procedure Cap_Revoke
+     (Cdt      : in out Cdt_Table;
+      Root_Id  : Cap_Id;
+      Status   : out Kernel_Error)
+   is
+      Stack : Revoke_Stack;
+      Id    : Cap_Id;
+   begin
+      if Revoke_Stacks.Length (Stack) >= Cdt_Max_Revoke_Depth then
+         Status := Capacity_Exceeded;
+         return;
+      end if;
+      Revoke_Stacks.Append (Stack, Root_Id);
+
+      while not Revoke_Stacks.Is_Empty (Stack) loop
+         Id := Revoke_Stacks.Last_Element (Stack);
+         Revoke_Stacks.Delete_Last (Stack);
+
+         declare
+            Entry_Found : Boolean;
+            E           : Cdt_Entry;
+         begin
+            Cdt_Get (Cdt, Id, E, Entry_Found);
+            if not Entry_Found then
+               goto Continue;
+            end if;
+
+            E.Revoke_Flag := True;  --  атомарный Release-стор
+
+            --  T30: push-уведомление при revoke
+            if E.Revoke_Notify /= null and then E.Revoke_Notify.Is_Alive then
+               Notification_Signal (E.Revoke_Notify);
+            end if;
+
+            --  Добавить детей в стек через sibling-list. Дети собираются
+            --  ДО удаления записи — идентично порядку операций Rust-версии
+            --  (комментарий "entry остаётся валидной ссылкой, пока мы её
+            --  держим; remove() вызывается после").
+            declare
+               Child_Id : Cap_Id := E.First_Child;
+               Child_E  : Cdt_Entry;
+               Found    : Boolean;
+            begin
+               while Child_Id /= No_Cap_Id loop
+                  if Revoke_Stacks.Length (Stack) >= Cdt_Max_Revoke_Depth then
+                     Status := Capacity_Exceeded;
+                     return;
+                  end if;
+                  Revoke_Stacks.Append (Stack, Child_Id);
+                  Cdt_Get (Cdt, Child_Id, Child_E, Found);
+                  Child_Id := (if Found then Child_E.Next_Sibling else No_Cap_Id);
+               end loop;
+            end;
+
+            Cdt_Remove (Cdt, Id);
+         end;
+         <<Continue>>
+      end loop;
+
+      Status := Ok;
+   end Cap_Revoke;
+   --  Invariant (CVE-AURA-010, перенесено как есть): весь обход должен
+   --  выполняться под Global_Cdt_Lock — вызывающий код обязан удерживать
+   --  Ticket_Lock.Instance перед вызовом Cap_Revoke.
+
+--  --- doc lines 1423-1480 ---
+   procedure Cap_Revoke_Notify_Set
+     (Cdt   : in out Cdt_Table;
+      Id    : Cap_Id;
+      Notif : Notification_Ref;   --  требует прав Write, эквивалент
+                                    --  Cap<Notification, impl HasWrite>
+      Status : out Kernel_Error)
+   with Pre => Contains (Notif.Rights, Write);
+
+   --  ИСПРАВЛЕНО при повторном аудите порта на вымывание: обе функции
+   --  этой пары были перенесены только как сигнатуры без тел, хотя
+   --  полностью специфицированы уже в Rust-версии. Восстановлено
+   --  дословно.
+   procedure Cap_Revoke_Notify_Set
+     (Cdt   : in out Cdt_Table;
+      Id    : Cap_Id;
+      Notif : Notification_Ref;
+      Status : out Kernel_Error)
+   is
+      Check_Status : constant Kernel_Error := Check_Valid (Notif);
+      E            : Cdt_Entry;
+      Found        : Boolean;
+   begin
+      if Check_Status /= Ok then
+         Status := Check_Status;
+         return;
+      end if;
+      Cdt_Get_Mut (Cdt, Id, E, Found);
+      if not Found then
+         Status := Invalid_Cap;
+         return;
+      end if;
+      E.Revoke_Notify := Downgrade (Notif.Object);
+      Cdt_Set (Cdt, Id, E);
+      Status := Ok;
+   end Cap_Revoke_Notify_Set;
+
+   procedure Cap_Revoke_Notify_Clear
+     (Cdt    : in out Cdt_Table;
+      Id     : Cap_Id;
+      Status : out Kernel_Error);
+
+   procedure Cap_Revoke_Notify_Clear
+     (Cdt    : in out Cdt_Table;
+      Id     : Cap_Id;
+      Status : out Kernel_Error)
+   is
+      E     : Cdt_Entry;
+      Found : Boolean;
+   begin
+      Cdt_Get_Mut (Cdt, Id, E, Found);
+      if not Found then
+         Status := Invalid_Cap;
+         return;
+      end if;
+      E.Revoke_Notify := Empty_Weak_Ref;
+      Cdt_Set (Cdt, Id, E);
+      Status := Ok;
+   end Cap_Revoke_Notify_Clear;
+
+--  --- doc lines 1487-1492 ---
+   Cdt_Gc_Threshold : constant := Cdt_Capacity * 4 / 5;  -- 80%, T23
+
+   function Cdt_Gc (Cdt : in out Cdt_Table) return Natural;
+   --  Реализация — обход всех занятых слотов, удаление листьев с
+   --  Revoke_Flag = True. Один проход может не собрать всё — вызывать до
+   --  стабилизации, идентично комментарию Rust-версии.
+
+--  --- doc lines 1515-1543 ---
+   function Has_Deny_Ancestor
+     (Cdt : Cdt_Table; Id : Cap_Id; Op : Mask) return Boolean
+   is
+      Cur   : Cap_Id := Id;
+      Depth : Natural := 0;
+      E     : Cdt_Entry;
+      Found : Boolean;
+   begin
+      loop
+         Depth := Depth + 1;
+         if Depth > Cdt_Capacity then
+            --  Цикл невозможен при корректной работе CDT. Fail-safe: deny.
+            --  Идентично Rust-версии: debug_assertions → panic (перенесено
+            --  как pragma Assert, активная только со сборкой с проверками),
+            --  release → return True (fail-safe deny сохранён безусловно).
+            pragma Assert (False, "Has_Deny_Ancestor: cycle detected");
+            return True;
+         end if;
+
+         Cdt_Get (Cdt, Cur, E, Found);
+         exit when not Found;
+
+         if (E.Rights and Shift_Left (Op, 16)) /= 0 then
+            return True;
+         end if;
+         Cur := E.Parent;
+      end loop;
+      return False;
+   end Has_Deny_Ancestor;
+
+--  --- doc lines 1552-1568 ---
+   procedure Cap_Seal
+     (Cdt    : in out Cdt_Table;
+      Id     : Cap_Id;
+      Status : out Kernel_Error)
+   is
+      E     : Cdt_Entry;
+      Found : Boolean;
+   begin
+      Cdt_Get_Mut (Cdt, Id, E, Found);
+      if not Found then
+         Status := Invalid_Cap;
+         return;
+      end if;
+      E.Rights := E.Rights or Shift_Left (Grant, 16);  --  Deny_Grant
+      Cdt_Set (Cdt, Id, E);
+      Status := Ok;
+   end Cap_Seal;
+
+--  --- doc lines 1587-1604 ---
+   function Cap_Check_Deny
+     (Cdt       : Cdt_Table;
+      Id        : Cap_Id;
+      Requested : Mask) return Kernel_Error
+   is
+      Ops : constant array (1 .. 8) of Mask :=
+        (Read, Write, Manage, Grant,
+         Attr_Read, Attr_Write, Mount, Bind_Prm);
+   begin
+      for Op of Ops loop
+         if Contains (Requested, Op)
+           and then Has_Deny_Ancestor (Cdt, Id, Op)
+         then
+            return Perm_Denied;
+         end if;
+      end loop;
+      return Ok;
+   end Cap_Check_Deny;

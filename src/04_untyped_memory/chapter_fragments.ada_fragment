@@ -1,0 +1,75 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 2265-2327 ---
+   Alloc_Granule_Bytes : constant := 64;
+
+   generic
+      type Target_Type is new Kernel_Object with private;
+   procedure Untyped_Retype
+     (Cap       : Untyped_Manage_Ref;  --  требует Manage
+      Offset    : Interfaces.Unsigned_64;
+      Count     : Interfaces.Unsigned_64;
+      Obj_Size  : Interfaces.Unsigned_64;
+      Result    : out Target_Manage_Cap_Array;  --  эквивалент Vec<Cap<T,Manage>>,
+                                                   --  здесь — Bounded_Vector
+      Status    : out Kernel_Error)
+   with Pre => Contains (Cap.Rights, Manage);
+
+   procedure Untyped_Retype_Body
+     (Cap       : Untyped_Manage_Ref;
+      Offset    : Interfaces.Unsigned_64;
+      Count     : Interfaces.Unsigned_64;
+      Obj_Size  : Interfaces.Unsigned_64;
+      Status    : out Kernel_Error)
+   is
+      Total_Size  : Interfaces.Unsigned_64;
+      Overflowed  : Boolean;
+      Region_Size : Interfaces.Unsigned_64;
+   begin
+      --  checked_mul → явная проверка переполнения перед умножением
+      Overflowed := Count /= 0
+        and then Obj_Size > Interfaces.Unsigned_64'Last / Count;
+      if Overflowed then
+         Status := Overflow;
+         return;
+      end if;
+      Total_Size := Count * Obj_Size;
+
+      Region_Size := 2 ** Natural (Cap.Object.Size_Bits);
+      if Offset > Region_Size or else Total_Size > Region_Size - Offset then
+         Status := Overflow;
+         return;
+      end if;
+
+      Try_Reserve_Range (Cap.Object, Offset, Total_Size, Status);
+      --  OPEN (портировано из todo!() Rust-версии, §4.3): остаток тела
+      --  (фактическое создание Count объектов типа Target_Type в
+      --  зарезервированном диапазоне) не реализовано ни в Rust-документе,
+      --  ни здесь.
+   end Untyped_Retype_Body;
+
+   procedure Try_Reserve_Range
+     (Region : in out Untyped_Region;
+      Offset : Interfaces.Unsigned_64;
+      Total  : Interfaces.Unsigned_64;
+      Status : out Kernel_Error)
+   is
+      First_G : constant Interfaces.Unsigned_64 := Offset / Alloc_Granule_Bytes;
+      Count_G : constant Interfaces.Unsigned_64 :=
+        (Total + Alloc_Granule_Bytes - 1) / Alloc_Granule_Bytes;  -- div_ceil
+   begin
+      --  OPEN (портировано из todo!() Rust-версии, §4.3): атомарная проверка
+      --  + резервирование с откатом при коллизии — не реализовано ни в
+      --  Rust-документе, ни здесь. First_G/Count_G вычислены как в
+      --  оригинале, дальнейшая CAS-логика по битмапу не специфицирована.
+      Status := Not_Supported;
+   end Try_Reserve_Range;

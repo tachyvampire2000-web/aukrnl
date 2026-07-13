@@ -1,0 +1,14 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Инстанциации generic-пакетов, встречающиеся в этой главе документа
+--  вне какого-либо из его именованных пакетов верхнего уровня.
+
+package Thread_Weak_Ref_Base is new Aura.Weak_Ref (Thread, Thread_Access);
+
+package Device_Object_Capability is new Aura.Capability (Device_Object);
+
+   package Revoke_Stacks is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Positive, Element_Type => Cap_Id);

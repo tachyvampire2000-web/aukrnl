@@ -1,0 +1,16 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Инстанциации generic-пакетов, встречающиеся в этой главе документа
+--  вне какого-либо из его именованных пакетов верхнего уровня.
+
+   package Cap_Token_Maps is new Aura.Fixed_Hash_Map
+     (Key_Type => Interfaces.Unsigned_64, Value_Type => Cap_Token_Status,
+      Capacity => 65536);
+
+   package Layer_Keys is new Aura.Fixed_Hash_Map
+     (Key_Type   => Layer_Key,   --  (Layer_Kind, Bounded_String)
+      Value_Type => Slot_Id,
+      Capacity   => 4096);

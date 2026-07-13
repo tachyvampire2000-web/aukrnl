@@ -1,0 +1,158 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 5632-5644 ---
+   Sealed_Call_Max_Caps : constant := 8;
+
+   --  Использует Erased_Cap (не Cap_Any_Ref) — см. открытый вопрос T109
+   --  ниже: в исходном Rust-документе для одного и того же понятия
+   --  «мандат со стёртым типом» используются ДВА разных имени
+   --  (`AnyCapRef` в §3.1/§16 Rust-версии; `ErasedCap` в §5.6/§18
+   --  Rust-версии — 4 и 7 использований соответственно, ни один нигде не
+   --  определён как struct). Порт следует тому же выбору, что и
+   --  Rust-версия здесь конкретно (более частый вариант, Erased_Cap), БЕЗ
+   --  переименования остальных мест, где Rust-версия использовала
+   --  AnyCapRef (§3.1/§16 порта сохраняют Cap_Any_Ref как есть) —
+   --  унификация всего документа не входит в задачу порта и остаётся
+   --  тем же T109, перенесённым, а не решённым за автора оригинала.
+
+--  --- doc lines 5646-5707 ---
+     (Index_Type => Positive, Element_Type => Erased_Cap);
+
+   --  Закрытый набор операций, не произвольный код — тот же принцип, что
+   --  Pending_Action в целом (§16a.3 порта).
+   type Sealed_Op_Kind is (Object_Destroy_Op, Watchdog_Policy_Override_Op);
+
+   type Sealed_Op (Kind : Sealed_Op_Kind := Object_Destroy_Op) is record
+      case Kind is
+         when Watchdog_Policy_Override_Op =>
+            Override_Policy : Watchdog_Policy;
+         when others => null;
+      end case;
+   end record;
+   --  Расширяется по мере появления конкретных опасных операций,
+   --  управляемых через Synapse/multi-sig — не проектируется впрок.
+
+   type Sealed_Call is limited record
+      Caps : Sealed_Cap_Vectors.Vector (Sealed_Call_Max_Caps);
+      Op   : Sealed_Op;
+   end record;
+
+   --  Проверяет валидность ВСЕХ мандатов в Sealed_Call перед выполнением
+   --  — не только вновь предъявленного при последнем Synapse_Signal.
+   --  Один из ранее собранных мандатов мог быть отозван в промежутке
+   --  между предъявлениями (TOCTOU) — без повторной проверки всего
+   --  набора можно накопить порог из частично протухших прав.
+   --
+   --  ПРИМЕЧАНИЕ (перенесено дословно как открытый вопрос из
+   --  Rust-версии): Erased_Cap нигде в документе не специфицирован как
+   --  конкретный тип (см. комментарий у Sealed_Cap_Vectors выше) —
+   --  соответственно, функция проверки валидности стёртого мандата
+   --  (Erased_Cap_Check_Valid ниже) тоже не определяется здесь по
+   --  существу, только объявляется как необходимый контракт. Реальная
+   --  реализация зависит от того, как в итоге будет специфицирован
+   --  Erased_Cap/Cap_Any_Ref (T109). Порт НЕ выбирает конкретное
+   --  представление за автора оригинала.
+   function Erased_Cap_Check_Valid (Cap : Erased_Cap) return Kernel_Error
+   with Import;  --  открытая внешняя точка, идентичная todo!()
+                  --  Rust-версии
+
+   function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error
+   is
+      Check_Status : Kernel_Error;
+   begin
+      for I in 1 .. Sealed_Cap_Vectors.Length (Call.Caps) loop
+         Check_Status := Erased_Cap_Check_Valid
+           (Sealed_Cap_Vectors.Element (Call.Caps, I));
+         if Check_Status /= Ok then
+            return Check_Status;
+         end if;
+      end loop;
+      case Call.Op.Kind is
+         when Object_Destroy_Op =>
+            --  OPEN (портировано из todo!() Rust-версии): делегирует в
+            --  Object_Destroy (§1 порта) — тело не реализовано ни в
+            --  исходном документе, ни здесь.
+            return Not_Supported;
+         when Watchdog_Policy_Override_Op =>
+            --  OPEN (портировано из todo!() Rust-версии): не реализовано.
+            return Not_Supported;
+      end case;
+   end Sealed_Call_Execute;
+
+--  --- doc lines 5722-5735 ---
+   Synapse_Max_Fire_Depth : constant := 16;
+
+   --  Rust thread_local! — Ada-эквивалент через уже существующий
+   --  Aura.Per_Cpu (§A.3 порта), с той разницей, что Rust thread_local
+   --  привязан к потоку исполнения (userspace/kernel thread), а
+   --  Per_Cpu — к процессорному ядру. Для FIRE_DEPTH это различие не
+   --  меняет корректность: счётчик глубины каскада должен быть уникален
+   --  per независимый поток управления, обрабатывающий один synapse_fire
+   --  за раз без прерывания другим таким же вызовом на ТОМ ЖЕ ядре — что
+   --  Per_Cpu и обеспечивает при отсутствии вложенной преемптивности
+   --  внутри обработки одного sqe. Если планировщик допускает
+   --  прерывание synapse_fire другим synapse_fire на том же CPU
+   --  (например, через вложенное прерывание) — это отдельный,
+   --  не поднятый в Rust-версии вопрос, не решаемый здесь заново.
+
+--  --- doc lines 5737-5787 ---
+     (Element_Type => Interfaces.Unsigned_8, Max_Cpus => Aura.Tlb_Shootdown.Max_Cpus);
+
+   Fire_Depth : Fire_Depth_Cells.Instance := Fire_Depth_Cells.Create (0);
+
+   function Synapse_Fire (Syn : in out Synapse) return Kernel_Error
+   is
+      Cpu    : constant Natural := Current_Cpu_Id;
+      Depth  : constant Interfaces.Unsigned_8 := Fire_Depth_Cells.Get (Fire_Depth, Cpu);
+      Result : Kernel_Error;
+   begin
+      if Depth >= Synapse_Max_Fire_Depth then
+         return Cascade_Too_Deep;
+      end if;
+      Fire_Depth_Cells.Set (Fire_Depth, Cpu, Depth + 1);
+      Result := Apply_Pending_Action (Syn.Action);
+      Fire_Depth_Cells.Set (Fire_Depth, Cpu, Depth);
+      return Result;
+   end Synapse_Fire;
+
+   function Apply_Pending_Action (Action : Pending_Action) return Kernel_Error
+   is
+      Notif_Alive  : Boolean;
+      Notif        : Notification_Ref;
+      Next_Alive   : Boolean;
+      Next         : Synapse_Ref;
+      Apply_Status : Kernel_Error;
+   begin
+      case Action.Kind is
+         when Signal_Notification_Action =>
+            Upgrade (Action.Notif_Target, Notif, Notif_Alive);
+            if Notif_Alive then
+               Notif.Pending := Notif.Pending or Action.Notif_Bit;
+               if Waiter_Count_Snapshot (Notif.Wait_Queue) > 0 then
+                  Wake_All_With_Signal (Notif.Wait_Queue);
+               end if;
+            end if;
+            return Ok;
+
+         when Feed_Synapse_Action =>
+            Upgrade (Action.Synapse_Target, Next, Next_Alive);
+            if Next_Alive then
+               Apply_Status := Synapse_Apply_Delta
+                 (Next.all, Signal_Delta (Action.Feed_Kind));
+               return Apply_Status;
+            end if;
+            return Ok;
+
+         when Execute_Sealed_Action =>
+            return Sealed_Call_Execute (Action.Sealed);
+      end case;
+   end Apply_Pending_Action;

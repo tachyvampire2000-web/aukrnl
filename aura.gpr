@@ -1,0 +1,16 @@
+--  AURA kernel — GNAT project file
+--  SPDX-License-Identifier: GPL-2.0-only
+
+project Aura is
+
+   for Languages use ("Ada");
+   for Source_Dirs use ("src/**", "tests");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+   for Main use ("aura_selftest.adb");  --  host/reference self-test
+
+   package Compiler is
+      for Default_Switches ("Ada") use ("-gnat2022", "-gnatwa");
+   end Compiler;
+
+end Aura;

@@ -1,0 +1,89 @@
+--  Материализовано из технической спецификации порта ядра AURA на
+--  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
+--  спецификации, а не проверенный компилятором результат: известные
+--  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+
+--  Код этой главы, показанный в источнике вне какого-либо
+--  объявленного пакета (например, операции CDT в главе 1, где
+--  Cap_Node/Cap_Mint/Cap_Revoke идут последовательностью деклараций
+--  раздела, а не одним package). НЕ самостоятельный compilation
+--  unit — см. MANIFEST.md, раздел «orphan-фрагменты».
+
+--  --- doc lines 4239-4315 ---
+   Path_Bloom_Filter_Words : constant := 32;
+
+   type Radix_Node is limited record
+      Header               : Object_Header;
+      Segment               : Name_Strings.Bounded_String;
+      First_Child           : Radix_Node_Access;
+      Next_Sibling          : Radix_Node_Access;
+      Subscribers           : Attr_Watch_Access;
+      Wildcard_Subscribers  : Attr_Watch_Access;
+      --  bits 63..32 = tokens, 31..0 = last_tick — упакованное состояние,
+      --  перенесено 1:1 для сохранения атомарности одной CAS-операцией.
+      Token_State           : aliased Interfaces.Unsigned_64;
+      Token_Capacity        : Interfaces.Unsigned_32;
+      Tokens_Per_Tick        : Interfaces.Unsigned_32;
+   end record
+     with Volatile;
+
+   function Try_Consume_Notify_Token
+     (Node : in out Radix_Node; Now_Tick : Interfaces.Unsigned_64)
+      return Boolean
+   is
+      Packed, New_Packed : Interfaces.Unsigned_64;
+      Tokens, Last        : Interfaces.Unsigned_32;
+      Elapsed, Refill      : Interfaces.Unsigned_32;
+      New_Tokens           : Interfaces.Unsigned_32;
+      Cas_Ok               : Boolean;
+   begin
+      loop
+         Packed := Node.Token_State;
+         Tokens := Interfaces.Unsigned_32 (Interfaces.Shift_Right (Packed, 32));
+         Last   := Interfaces.Unsigned_32 (Packed and 16#FFFF_FFFF#);
+
+         --  wrapping_sub эквивалент — Unsigned_32 арифметика в Ada уже
+         --  оборачивается по модулю, идентично Rust wrapping_sub.
+         Elapsed := Interfaces.Unsigned_32 (Now_Tick) - Last;
+
+         --  saturating_mul/saturating_add/min — явные насыщающие операции,
+         --  Ada не насыщает автоматически при переполнении.
+         Refill := Saturating_Mul_U32 (Elapsed, Node.Tokens_Per_Tick);
+         New_Tokens := Interfaces.Unsigned_32'Min
+           (Saturating_Add_U32 (Tokens, Refill), Node.Token_Capacity);
+
+         if New_Tokens = 0 then
+            return False;
+         end if;
+
+         New_Packed := Interfaces.Shift_Left
+           (Interfaces.Unsigned_64 (New_Tokens - 1), 32)
+           or Interfaces.Unsigned_64 (Now_Tick and 16#FFFF_FFFF#);
+
+         Atomic_Compare_Exchange_U64
+           (Node.Token_State'Address, Packed, New_Packed, Cas_Ok);
+         if Cas_Ok then
+            return True;
+         end if;
+      end loop;
+   end Try_Consume_Notify_Token;
+
+   function Saturating_Mul_U32
+     (A, B : Interfaces.Unsigned_32) return Interfaces.Unsigned_32
+   is
+      Wide : constant Interfaces.Unsigned_64 :=
+        Interfaces.Unsigned_64 (A) * Interfaces.Unsigned_64 (B);
+   begin
+      return (if Wide > Interfaces.Unsigned_64 (Interfaces.Unsigned_32'Last)
+              then Interfaces.Unsigned_32'Last
+              else Interfaces.Unsigned_32 (Wide));
+   end Saturating_Mul_U32;
+
+   function Saturating_Add_U32
+     (A, B : Interfaces.Unsigned_32) return Interfaces.Unsigned_32
+   is
+   begin
+      return (if A > Interfaces.Unsigned_32'Last - B
+              then Interfaces.Unsigned_32'Last
+              else A + B);
+   end Saturating_Add_U32;
