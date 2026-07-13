@@ -18,6 +18,8 @@ with Aura.Synapse;
 with Aura.Package_Fs;
 with Aura.Cap_Node;
 with Aura.Iommu;
+with Aura.Thread;
+with Aura.Timer;
 
 procedure Aura_Selftest is
 
@@ -256,6 +258,78 @@ procedure Aura_Selftest is
       Check ("iommu: mapping succeeds", St = Ok and Domain.Object.Mapped_Frame_Count = 1);
    end Test_Iommu;
 
+   procedure Test_CDT_And_Slab is
+      use Aura.Cap_Node;
+      use type Interfaces.Unsigned_32;
+      Root, Child1, Child2 : Cap_Node_Access;
+      St : Kernel_Error;
+   begin
+      Alloc (Obj_Epoch => 1, Result => Root, Status => St);
+      Check ("slab_alloc: root succeeds", St = Ok and Root /= null);
+
+      Alloc (Obj_Epoch => 1, Result => Child1, Status => St);
+      Check ("slab_alloc: child1 succeeds", St = Ok and Child1 /= null);
+
+      Alloc (Obj_Epoch => 1, Result => Child2, Status => St);
+      Check ("slab_alloc: child2 succeeds", St = Ok and Child2 /= null);
+
+      -- Build hierarchy parent -> children
+      Root.First_Child := Child1;
+      Child1.Parent := Cap_Node_Weak_Ref (Root);
+      Child1.Next_Sibling := Child2;
+      Child2.Prev_Sibling := Child1;
+      Child2.Parent := Cap_Node_Weak_Ref (Root);
+
+      -- Revoke Root, which should cascade and free/revoke children
+      Cap_Revoke (Root, St);
+      Check ("cdt: cascade revoke on root succeeds", St = Ok);
+      Check ("cdt: root revoked in progress", Root.Revoke_In_Progress);
+      Check ("cdt: child1 revoked in progress", Child1.Revoke_In_Progress);
+      Check ("cdt: child2 revoked in progress", Child2.Revoke_In_Progress);
+      Check ("cdt: epoch bumped for root", Root.Cap_Epoch = 2);
+      Check ("cdt: epoch bumped for child1", Child1.Cap_Epoch = 2);
+      Check ("cdt: epoch bumped for child2", Child2.Cap_Epoch = 2);
+   end Test_CDT_And_Slab;
+
+   procedure Test_Budget_Donation is
+      use Aura.Thread;
+      use Aura.Sched;
+      use type Aura.Thread.Sched_Ctx_Access;
+
+      Caller   : aliased Aura.Thread.Thread;
+      Receiver : aliased Aura.Thread.Thread;
+   begin
+      Caller.Active_Sched_Ctx := Caller.Own_Sched_Ctx'Unchecked_Access;
+      Receiver.Active_Sched_Ctx := Receiver.Own_Sched_Ctx'Unchecked_Access;
+
+      Scheduler_Donate_Budget (Caller'Unchecked_Access, Receiver'Unchecked_Access);
+      Check ("sched: donation sets receiver active sched ctx", Receiver.Active_Sched_Ctx = Caller.Active_Sched_Ctx);
+   end Test_Budget_Donation;
+
+   Timer_Fired : aliased Boolean := False;
+
+   procedure My_Timer_Callback is
+   begin
+      Timer_Fired := True;
+   end My_Timer_Callback;
+
+   procedure Test_Deadline_Timers is
+      use Aura.Timer;
+      Succ : Boolean;
+   begin
+      Timer_Fired := False;
+      Register_Deadline_Timer (Aura.Timer.Global_Tick + 2, My_Timer_Callback'Unrestricted_Access, Succ);
+      Check ("timer: register absolute deadline timer succeeds", Succ);
+
+      -- Fire timer interrupt handler - first tick
+      Aura.Timer.Timer_Interrupt_Handler;
+      Check ("timer: first tick does not fire yet", not Timer_Fired);
+
+      -- Fire timer interrupt handler - second tick
+      Aura.Timer.Timer_Interrupt_Handler;
+      Check ("timer: second tick fires callback", Timer_Fired);
+   end Test_Deadline_Timers;
+
    procedure Test_Synapse is
       use Aura.Synapse;
       use type Interfaces.Integer_32;
@@ -327,6 +401,9 @@ begin
    Test_Package_Fs;
    Test_Cap_Node_Alloc;
    Test_Iommu;
+   Test_CDT_And_Slab;
+   Test_Budget_Donation;
+   Test_Deadline_Timers;
 
    if Failures = 0 then
       Put_Line ("aura selftest: OK");

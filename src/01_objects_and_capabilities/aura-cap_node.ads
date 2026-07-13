@@ -53,8 +53,11 @@ package Aura.Cap_Node is
       Status    : out Kernel_Error)
    with
      Post => (if Status = Ok then Result /= null);
-   --  OPEN (портировано из todo!() Rust-версии, §1.2): тело не реализовано —
-   --  требует конкретной slab-аллокационной стратегии, которая в
-   --  Rust-документе также не была специфицирована.
+
+   procedure Cap_Revoke
+     (Root   : Cap_Node_Access;
+      Status : out Kernel_Error);
+
+   procedure Free (Node : Cap_Node_Access);
 
 end Aura.Cap_Node;
