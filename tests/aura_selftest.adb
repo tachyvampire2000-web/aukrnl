@@ -15,6 +15,9 @@ with Aura.Sched;
 with Aura.Attr;
 with Aura.Cap_Policy;
 with Aura.Synapse;
+with Aura.Package_Fs;
+with Aura.Cap_Node;
+with Aura.Iommu;
 
 procedure Aura_Selftest is
 
@@ -158,6 +161,101 @@ procedure Aura_Selftest is
       Check ("policy: revoke is permanent", not Applicable (Gated, 0));
    end Test_Cap_Policy;
 
+   procedure Test_Sealed_Call is
+      use Aura.Synapse;
+      Call : aliased Sealed_Call;
+      C1   : Erased_Cap := (Cap_Token => 111, Valid => True);
+      C2   : Erased_Cap := (Cap_Token => 222, Valid => False);
+      St   : Kernel_Error;
+
+      -- Synapse action
+      Sharp : aliased Synapse :=
+        (Header => <>, Charge => 0, Threshold_Hi => 1,
+         Threshold_Lo => (Present => False),
+         Reset_Mode_Field => To_Zero,
+         Decay => (Present => False),
+         Action =>
+           (Kind   => Execute_Sealed_Action,
+            Sealed => Call'Unchecked_Access));
+   begin
+      Sealed_Cap_Vectors.Append (Call.Caps, C1);
+      St := Sealed_Call_Execute (Call);
+      Check ("sealed_call: execute valid caps ok", St = Ok);
+
+      Sealed_Cap_Vectors.Append (Call.Caps, C2);
+      St := Sealed_Call_Execute (Call);
+      Check ("sealed_call: execute invalid cap fails", St = Bad_Cap);
+
+      -- Synapse fire with Sealed Action
+      -- Since it currently has C2 (invalid), Synapse_Fire/Apply_Delta should fail
+      St := Synapse_Apply_Delta (Sharp, 1);
+      Check ("synapse: execute sealed fails if cap invalid", St = Bad_Cap);
+
+      -- Restore C2 to valid, then it should succeed
+      Call.Caps.Replace_Element (2, (Cap_Token => 222, Valid => True));
+      St := Synapse_Apply_Delta (Sharp, 1);
+      Check ("synapse: execute sealed succeeds if all caps valid", St = Ok);
+   end Test_Sealed_Call;
+
+   procedure Test_Package_Fs is
+      use Aura.Package_Fs;
+      use type Interfaces.Unsigned_64;
+      Union : P_Union := (Images => [others => null], Image_Count => 0, Combined_Bloom => (Combined => [others => 0]));
+      Img1  : aliased Package_Image_Object := (Id => 1, Bloom => [0 => 16#1#, others => 0]);
+      Img2  : aliased Package_Image_Object := (Id => 2, Bloom => [0 => 16#2#, others => 0]);
+      Img3  : aliased Package_Image_Object := (Id => 3, Bloom => [0 => 16#1#, others => 0]);
+      St    : Kernel_Error;
+   begin
+      Package_Mount (Union, Img1'Unchecked_Access, St);
+      Check ("package_fs: mount img1 ok", St = Ok and Union.Image_Count = 1);
+
+      Package_Mount (Union, Img1'Unchecked_Access, St);
+      Check ("package_fs: mount duplicate img1 fails", St = Already_Exists);
+
+      Package_Mount (Union, Img2'Unchecked_Access, St);
+      Check ("package_fs: mount non-overlapping img2 ok", St = Ok and Union.Image_Count = 2);
+
+      Package_Mount (Union, Img3'Unchecked_Access, St);
+      Check ("package_fs: mount overlapping img3 fails", St = Path_Conflict);
+
+      Package_Unmount (Union, Img1'Unchecked_Access, St);
+      Check ("package_fs: unmount img1 ok", St = Ok and Union.Image_Count = 1);
+      Check ("package_fs: bloom filter cleaned up after unmount", Union.Combined_Bloom.Combined (0) = 16#2#);
+   end Test_Package_Fs;
+
+   procedure Test_Cap_Node_Alloc is
+      use Aura.Cap_Node;
+      use type Interfaces.Unsigned_32;
+      Node : Cap_Node_Access;
+      St   : Kernel_Error;
+   begin
+      Alloc (Obj_Epoch => 555, Result => Node, Status => St);
+      Check ("cap_node: alloc succeeds", St = Ok and Node /= null);
+      if Node /= null then
+         Check ("cap_node: epoch set correctly", Node.Obj_Creation_Epoch = 555);
+      end if;
+   end Test_Cap_Node_Alloc;
+
+   procedure Test_Iommu is
+      use Aura.Iommu;
+      use type Interfaces.Unsigned_32;
+      Device_Obj : aliased Device_Object := (Header => <>, Platform_Id => 999);
+      Prm_Cap    : Object_Bind_Prm_Ref := (Object => Device_Obj'Unchecked_Access);
+      Device_Cap : Device_Object_Manage_Ref := (Object => Device_Obj'Unchecked_Access);
+      Frame_Cap  : Object_Read_Ref := (Object => Device_Obj'Unchecked_Access);
+      Domain     : Iommu_Domain_Manage_Ref;
+      St         : Kernel_Error;
+   begin
+      Iommu_Domain_Create (Prm_Cap, Max_Mapped_Frames => 5, Result => Domain, Status => St);
+      Check ("iommu: domain create succeeds", St = Ok and Domain.Object /= null);
+
+      Iommu_Attach_Device (Domain, Device_Cap, St);
+      Check ("iommu: device attach succeeds", St = Ok and Domain.Object.Attached_Device_Count = 1);
+
+      Iommu_Map (Domain, Frame_Cap, Offset => 16#1000#, Iova => 16#8000#, Length => 4096, Flags => 0, Status => St);
+      Check ("iommu: mapping succeeds", St = Ok and Domain.Object.Mapped_Frame_Count = 1);
+   end Test_Iommu;
+
    procedure Test_Synapse is
       use Aura.Synapse;
       use type Interfaces.Integer_32;
@@ -225,6 +323,10 @@ begin
    Test_Attr_Watch;
    Test_Cap_Policy;
    Test_Synapse;
+   Test_Sealed_Call;
+   Test_Package_Fs;
+   Test_Cap_Node_Alloc;
+   Test_Iommu;
 
    if Failures = 0 then
       Put_Line ("aura selftest: OK");

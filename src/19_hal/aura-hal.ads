@@ -56,6 +56,14 @@ package Aura.Hal is
    procedure Hal_Iommu_Tlb_Invalidate_All
      (Domain_Id : Interfaces.Unsigned_32);
 
+   procedure Hal_Iommu_Map
+     (Root_Phys : Interfaces.Unsigned_64;
+      Iova      : Interfaces.Unsigned_64;
+      Phys      : Interfaces.Unsigned_64;
+      Size      : Interfaces.Unsigned_64;
+      Flags     : Interfaces.Unsigned_32;
+      Status    : out Kernel_Error);
+
    --  CAS на 64-битном слове по адресу — эквивалент
    --  AtomicU64::compare_exchange в Rust-версии.
    procedure Atomic_Compare_Exchange_U64

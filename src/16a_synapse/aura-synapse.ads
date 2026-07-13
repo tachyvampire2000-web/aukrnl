@@ -8,6 +8,7 @@ with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Rights; use Aura.Rights;
 with Aura.Notification;
 with Aura.Cap_Policy;
+with Ada.Containers.Bounded_Vectors;
 with Interfaces;
 
 package Aura.Synapse is
@@ -34,7 +35,33 @@ package Aura.Synapse is
       Expected_Epoch : Interfaces.Unsigned_32 := 0;
    end record;
 
-   type Sealed_Call is access all Integer; -- Placeholder (OPEN §16a.4)
+   Sealed_Call_Max_Caps : constant := 8;
+
+   type Erased_Cap is record
+      Cap_Token : Interfaces.Unsigned_64 := 0;
+      Valid     : Boolean := True;
+   end record;
+
+   package Sealed_Cap_Vectors is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Positive, Element_Type => Erased_Cap);
+
+   type Sealed_Op_Kind is (Object_Destroy_Op, Watchdog_Policy_Override_Op);
+
+   type Sealed_Op (Kind : Sealed_Op_Kind := Object_Destroy_Op) is record
+      case Kind is
+         when others => null;
+      end case;
+   end record;
+
+   type Sealed_Call is record
+      Caps : Sealed_Cap_Vectors.Vector (Sealed_Call_Max_Caps);
+      Op   : Sealed_Op;
+   end record;
+
+   type Sealed_Call_Access is access all Sealed_Call;
+
+   function Erased_Cap_Check_Valid (Cap : Erased_Cap) return Kernel_Error;
+   function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error;
 
    type Integer_32_Option (Present : Boolean := False) is record
       case Present is
@@ -114,7 +141,7 @@ package Aura.Synapse is
            when Execute_Sealed_Action =>
               --  Опасное/составное действие — заранее собранный набор
               --  мандатов и закрытая операция над ними. См. §16a.4 порта.
-              Sealed : Sealed_Call;
+              Sealed : Sealed_Call_Access;
            when Gate_Policy_Action =>
               --  Сигнал управляет мандатом: активация/деактивация/
               --  отзыв политики при срабатывании. Различает направление:
