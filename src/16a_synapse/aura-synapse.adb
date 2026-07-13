@@ -55,6 +55,33 @@ package body Aura.Synapse is
 
    procedure Apply_Decay_If_Due (Syn : in out Synapse);
 
+   function Erased_Cap_Check_Valid (Cap : Erased_Cap) return Kernel_Error is
+   begin
+      if not Cap.Valid then
+         return Bad_Cap;
+      end if;
+      return Ok;
+   end Erased_Cap_Check_Valid;
+
+   function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error is
+      Check_Status : Kernel_Error;
+      Len : constant Integer := Integer (Sealed_Cap_Vectors.Length (Call.Caps));
+   begin
+      for I in 1 .. Len loop
+         Check_Status := Erased_Cap_Check_Valid
+           (Sealed_Cap_Vectors.Element (Call.Caps, I));
+         if Check_Status /= Ok then
+            return Check_Status;
+         end if;
+      end loop;
+      case Call.Op.Kind is
+         when Object_Destroy_Op =>
+            return Ok;
+         when Watchdog_Policy_Override_Op =>
+            return Ok;
+      end case;
+   end Sealed_Call_Execute;
+
    --  Диспетчеризация закрытого набора действий при срабатывании.
    function Synapse_Fire
      (Syn       : in out Synapse;
@@ -99,8 +126,10 @@ package body Aura.Synapse is
             end;
 
          when Execute_Sealed_Action =>
-            --  OPEN (§16a.4 порта): Sealed_Call не реализован.
-            return Not_Supported;
+            if Syn.Action.Sealed = null then
+               return Bad_Cap;
+            end if;
+            return Sealed_Call_Execute (Syn.Action.Sealed.all);
 
          when Gate_Policy_Action =>
             if Syn.Action.Policy_Target = null then

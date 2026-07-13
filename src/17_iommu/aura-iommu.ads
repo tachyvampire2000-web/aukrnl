@@ -6,7 +6,6 @@
 with Aura.Object; use Aura.Object;
 with Aura.Ticket_Lock;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
-with Aura.Rights; use Aura.Rights;
 with Ada.Containers.Bounded_Vectors;
 with Interfaces;
 

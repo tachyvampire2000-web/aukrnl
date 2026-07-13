@@ -4,7 +4,6 @@
 --  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
 
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
-with Aura.Rights; use Aura.Rights;
 with Interfaces;
 
 package Aura.Package_Fs is
@@ -12,13 +11,19 @@ package Aura.Package_Fs is
    pragma SPARK_Mode (On);
 
    Package_Union_Max : constant := 16;
-   type Package_Image_Ref is access all Integer; -- Placeholder
-   type Package_Image_Mount_Ref is access all Integer; -- Placeholder
 
    Path_Bloom_Filter_Words : constant := 32;
 
    type Bloom_Words is array (0 .. Path_Bloom_Filter_Words - 1)
      of Interfaces.Unsigned_64;
+
+   type Package_Image_Object is record
+      Id    : Interfaces.Unsigned_32;
+      Bloom : Bloom_Words := [others => 0];
+   end record;
+
+   type Package_Image_Ref is access all Package_Image_Object;
+   type Package_Image_Mount_Ref is access all Package_Image_Object;
 
    type Package_Metadata_Layer_C is record
       Bloom : Bloom_Words;

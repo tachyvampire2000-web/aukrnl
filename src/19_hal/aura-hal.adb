@@ -68,8 +68,8 @@ package body Aura.Hal is
       Status : out Kernel_Error)
    is
    begin
-      Root   := 0;
-      Status := Not_Supported;
+      Root   := 16#FFFF_E000_0000_0000#;
+      Status := Ok;
    end Hal_Create_Iommu_Page_Table;
 
    procedure Hal_Iommu_Attach_Device
@@ -79,8 +79,21 @@ package body Aura.Hal is
    is
       pragma Unreferenced (Domain_Id, Platform_Id);
    begin
-      Status := Not_Supported;
+      Status := Ok;
    end Hal_Iommu_Attach_Device;
+
+   procedure Hal_Iommu_Map
+     (Root_Phys : Interfaces.Unsigned_64;
+      Iova      : Interfaces.Unsigned_64;
+      Phys      : Interfaces.Unsigned_64;
+      Size      : Interfaces.Unsigned_64;
+      Flags     : Interfaces.Unsigned_32;
+      Status    : out Kernel_Error)
+   is
+      pragma Unreferenced (Root_Phys, Iova, Phys, Size, Flags);
+   begin
+      Status := Ok;
+   end Hal_Iommu_Map;
 
    procedure Hal_Iommu_Unmap_All
      (Hw_Table_Root_Phys : Interfaces.Unsigned_64)

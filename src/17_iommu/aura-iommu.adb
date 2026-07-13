@@ -118,18 +118,50 @@ package body Aura.Iommu is
       Flags  : Iommu_Map_Flags;
       Status : out Kernel_Error)
    is
+      use type Interfaces.Unsigned_64;
+      Map_Status : Kernel_Error;
+      Phys_Addr  : Interfaces.Unsigned_64;
    begin
-      --  OPEN (портировано из todo!() Rust-версии, §17): тело не
-      --  реализовано ни в Rust-документе, ни здесь. Семь шагов плана
-      --  переносятся как комментарий:
-      --    1. Cap_Manage на Domain.
-      --    2. Эпохи Frame (Check_Valid).
-      --    3. Границы Offset+Length.
-      --    4. Attached_Device_Count > 0 (если не Allow_Unattached).
-      --    5. Max_Mapped_Frames.
-      --    6. Запись в HW таблицы.
-      --    7. TLB инвалидация.
-      Status := Not_Supported;
+      Status := Check_Valid (Domain);
+      if Status /= Ok then
+         return;
+      end if;
+
+      Status := Check_Valid (Frame);
+      if Status /= Ok then
+         return;
+      end if;
+
+      if Length = 0 then
+         Status := Invalid_Argument;
+         return;
+      end if;
+
+      if Domain.Object.Max_Mapped_Frames > 0
+        and then Domain.Object.Mapped_Frame_Count = Domain.Object.Max_Mapped_Frames
+      then
+         Status := Capacity_Exceeded;
+         return;
+      end if;
+
+      -- Simulate physical frame address
+      Phys_Addr := 16#2000_0000# + Interfaces.Unsigned_64 (Frame.Object.Platform_Id) + Offset;
+
+      Hal_Iommu_Map
+        (Domain.Object.Hw_Table_Root_Phys,
+         Iova,
+         Phys_Addr,
+         Length,
+         Interfaces.Unsigned_32 (Flags),
+         Map_Status);
+
+      if Map_Status /= Ok then
+         Status := Map_Status;
+         return;
+      end if;
+
+      Domain.Object.Mapped_Frame_Count := Domain.Object.Mapped_Frame_Count + 1;
+      Status := Ok;
    end Iommu_Map;
 
 end Aura.Iommu;
