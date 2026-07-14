@@ -7,6 +7,8 @@ with Aura.Object; use Aura.Object;
 with Interfaces;
 with System;
 
+with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
+
 package Aura.Reincarnation is
 
    pragma SPARK_Mode (Off);
@@ -77,5 +79,10 @@ package Aura.Reincarnation is
    procedure Rebind_Namespace_Mounts (Proc : Process_Context_Ref; Contract : Reincarnation_Contract);
    procedure Contract_Escalation (Contract : in out Reincarnation_Contract);
    procedure Apply_Restart_Strategy (Contract : aliased in out Reincarnation_Contract; Forced : Boolean);
+
+   procedure Hot_Swap_Respawn
+     (Contract     : aliased in out Reincarnation_Contract;
+      New_Template : Cap_Any_Ref;
+      Status       : out Kernel_Error);
 
 end Aura.Reincarnation;

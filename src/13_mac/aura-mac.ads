@@ -37,6 +37,16 @@ package Aura.Mac is
      (Node : in out Aura.Namespace.Namespace_Node; New_Label : Mandatory_Label;
       Status : out Kernel_Error);
 
+   --  Causal Information Flow Control (CIFC)
+   type Causal_Taint is record
+      Tainted          : Boolean := False;
+      Taint_Level      : Interfaces.Unsigned_8 := 0;
+      Taint_Categories : Interfaces.Unsigned_64 := 0;
+   end record;
+
+   procedure Propagate_Taint (Taint : in out Causal_Taint; Label : Mandatory_Label);
+   function Check_Flow (Taint : Causal_Taint; Target : Mandatory_Label) return Kernel_Error;
+
 
    --  (продолжение из источника, doc-lines 4848-4855, после
    --  первоначального закрытия Aura.Mac — см. MANIFEST §Находки)

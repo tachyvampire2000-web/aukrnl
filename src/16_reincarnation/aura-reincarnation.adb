@@ -128,4 +128,35 @@ package body Aura.Reincarnation is
       end if;
    end Supervisor_Tick;
 
+   procedure Hot_Swap_Respawn
+     (Contract     : aliased in out Reincarnation_Contract;
+      New_Template : Cap_Any_Ref;
+      Status       : out Kernel_Error)
+   is
+      New_Ctx : Process_Context_Ref;
+   begin
+      if New_Template = null then
+         Status := Invalid_Argument;
+         return;
+      end if;
+
+      -- 1. Update Respawn template to the new version
+      Contract.Respawn_Cap := New_Template;
+
+      -- 2. Terminate the old process context gracefully
+      Kill_Process (Contract.Supervised, New_Template);
+
+      -- 3. Respawn the new version context from the new template cap
+      Respawn_From_Template (Contract.Supervised, New_Template, New_Ctx);
+
+      -- 4. Rebind all namespace mounts and migrate capabilities to the new context
+      Rebind_Namespace_Mounts (New_Ctx, Contract);
+
+      -- 5. Update supervised context, reset restart counters for the new component
+      Contract.Supervised := New_Ctx;
+      Contract.Restart_Count := 0;
+
+      Status := Ok;
+   end Hot_Swap_Respawn;
+
 end Aura.Reincarnation;
