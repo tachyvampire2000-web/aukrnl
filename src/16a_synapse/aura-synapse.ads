@@ -168,6 +168,9 @@ package Aura.Synapse is
       Reset_Mode_Field : Reset_Mode;
       Decay          : Decay_Spec_Option;
       Action         : Pending_Action;
+      --  Предотвращение переполнения заряда (Charge Saturation)
+      Max_Charge_Cap : Interfaces.Integer_32 := 100000;
+      Min_Charge_Cap : Interfaces.Integer_32 := -100000;
    end record
      with Volatile;
 
@@ -178,10 +181,13 @@ package Aura.Synapse is
    --  обесценивает смысл ограничения через мандаты (тот же принцип, что
    --  раздельные Read/Write вместо одного Any_Rights).
    type Synapse_Tap is limited record
-      Header       : Object_Header;
-      Target       : Synapse_Weak_Ref;
-      Is_Positive  : Boolean;
-      N            : Interfaces.Unsigned_32;
+      Header             : Object_Header;
+      Target             : Synapse_Weak_Ref;
+      Is_Positive        : Boolean;
+      N                  : Interfaces.Unsigned_32;
+      --  Tap-Level Rate-Limiting (защита от DoS на границе мандата Tap)
+      Min_Interval_Ticks : Interfaces.Unsigned_64 := 0; -- 0 = без ограничений
+      Last_Signal_Tick   : aliased Interfaces.Unsigned_64 := 0;
    end record
      with Volatile;
 

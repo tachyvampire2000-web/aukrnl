@@ -111,6 +111,7 @@ package body Aura.Synapse is
 
          when Feed_Synapse_Action =>
             if Depth >= Synapse_Max_Fire_Depth then
+               Last_Fired_Trace_Id := 999999999; -- Special Cascade Fault Tracepoint ID!
                return Cascade_Too_Deep;
             end if;
             declare
@@ -165,6 +166,14 @@ package body Aura.Synapse is
    begin
       Apply_Decay_If_Due (Syn);
       New_Charge := Syn.Charge + Value_Delta;
+
+      -- Charge Saturation Clamping / Hard Limits
+      if New_Charge > Syn.Max_Charge_Cap then
+         New_Charge := Syn.Max_Charge_Cap;
+      elsif New_Charge < Syn.Min_Charge_Cap then
+         New_Charge := Syn.Min_Charge_Cap;
+      end if;
+
       Syn.Charge := New_Charge;
 
       if New_Charge >= Syn.Threshold_Hi then
@@ -201,10 +210,23 @@ package body Aura.Synapse is
       Target       : Synapse_Ref;
       Kind         : Signal_Kind;
       Check_Status : constant Kernel_Error := Check_Valid (Tap);
+      Now          : Interfaces.Unsigned_64;
    begin
       if Check_Status /= Ok then
          return Check_Status;
       end if;
+
+      -- Tap-Level Rate-Limiting (защита от DoS на границе мандата Tap)
+      Now := Current_Tick;
+      if Tap.Object.Min_Interval_Ticks > 0 then
+         if Tap.Object.Last_Signal_Tick /= 0 then
+            if Now - Tap.Object.Last_Signal_Tick < Tap.Object.Min_Interval_Ticks then
+               return Would_Block;
+            end if;
+         end if;
+         Tap.Object.Last_Signal_Tick := Now;
+      end if;
+
       Upgrade (Tap.Object.Target, Target, Target_Alive);
       if not Target_Alive then
          return Revoked;

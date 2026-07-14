@@ -184,7 +184,8 @@ procedure Aura_Selftest is
          Decay => (Present => False),
          Action =>
            (Kind   => Execute_Sealed_Action,
-            Sealed => Call'Unchecked_Access));
+            Sealed => Call'Unchecked_Access),
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
    begin
       Sealed_Cap_Vectors.Append (Call.Caps, C1);
       St := Sealed_Call_Execute (Call);
@@ -564,6 +565,7 @@ procedure Aura_Selftest is
       use Aura.Synapse;
       use type Interfaces.Unsigned_32;
       use type Interfaces.Unsigned_64;
+      use type Interfaces.Integer_32;
       use type System.Address;
 
       -- 1. Sched_Ctx NUMA/Affinity test
@@ -583,7 +585,8 @@ procedure Aura_Selftest is
          Decay => (Present => False),
          Action =>
            (Kind     => Trace_Event_Action,
-            Trace_Id => 123456789));
+            Trace_Id => 123456789),
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
 
       Lim_Syn : aliased Synapse :=
         (Header => <>, Charge => 0, Threshold_Hi => 5,
@@ -591,7 +594,8 @@ procedure Aura_Selftest is
          Reset_Mode_Field => To_Zero,
          Decay => (Present => False),
          Action =>
-           (Kind => Reject_If_Saturated_Action));
+           (Kind => Reject_If_Saturated_Action),
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
 
       St : Kernel_Error;
    begin
@@ -640,6 +644,65 @@ procedure Aura_Selftest is
       -- Now trigger rate limit/saturation
       St := Synapse_Apply_Delta (Lim_Syn, 3);
       Check ("synapse: rate-limiting rejects delta exceeding threshold", St = Would_Block);
+
+      -- Charge Saturation Clamping test
+      declare
+         Sat_Syn : aliased Synapse :=
+           (Header => <>, Charge => 0, Threshold_Hi => 20, -- won't fire on 10
+            Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
+            Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
+            Max_Charge_Cap => 10, Min_Charge_Cap => -10);
+      begin
+         St := Synapse_Apply_Delta (Sat_Syn, 15);
+         Check ("synapse: charge is correctly saturated/clamped to Max_Charge_Cap",
+                Sat_Syn.Charge = 10 and St = Ok);
+      end;
+
+      -- Tap-level Rate-Limiting test
+      declare
+         T_Syn : aliased Synapse :=
+           (Header => <>, Charge => 0, Threshold_Hi => 10,
+            Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
+            Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
+            Max_Charge_Cap => 100, Min_Charge_Cap => -100);
+
+         Tap : aliased Synapse_Tap :=
+           (Header => <>, Target => Downgrade (T_Syn'Unchecked_Access),
+            Is_Positive => True, N => 1, Min_Interval_Ticks => 5, Last_Signal_Tick => 0);
+      begin
+         St := Synapse_Signal ((Object => Tap'Unchecked_Access, Rights => Aura.Rights.Write));
+         Check ("synapse: tap-level rate limiting accepts first signal", St = Ok);
+
+         St := Synapse_Signal ((Object => Tap'Unchecked_Access, Rights => Aura.Rights.Write));
+         Check ("synapse: tap-level rate limiting rejects too frequent signal", St = Would_Block);
+      end;
+
+      -- Cascade Fault Diagnostics test
+      declare
+         Syn_B : aliased Synapse :=
+           (Header => <>, Charge => 0, Threshold_Hi => 1,
+            Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
+            Decay => (Present => False),
+            Action => (Kind => Feed_Synapse_Action,
+                       Synapse_Target => (Target => null, Expected_Epoch => 0),
+                       Feed_Kind => (Tag => Positive_Signal, Positive_N => 0)),
+            Max_Charge_Cap => 100, Min_Charge_Cap => -100);
+
+         Syn_A : aliased Synapse :=
+           (Header => <>, Charge => 0, Threshold_Hi => 1,
+            Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
+            Decay => (Present => False),
+            Action => (Kind => Feed_Synapse_Action,
+                       Synapse_Target => Downgrade (Syn_B'Unchecked_Access),
+                       Feed_Kind => (Tag => Positive_Signal, Positive_N => 0)),
+            Max_Charge_Cap => 100, Min_Charge_Cap => -100);
+      begin
+         Syn_B.Action.Synapse_Target := Downgrade (Syn_A'Unchecked_Access);
+         Last_Fired_Trace_Id := 0;
+         St := Synapse_Apply_Delta (Syn_A, 1);
+         Check ("synapse: cascade fault limits recursion and sets diagnostic tracepoint",
+                St = Cascade_Too_Deep and Last_Fired_Trace_Id = 999999999);
+      end;
    end Test_New_Enhancements;
 
    procedure Test_Synapse is
@@ -662,7 +725,8 @@ procedure Aura_Selftest is
            (Kind          => Gate_Policy_Action,
             Policy_Target => Gated'Unchecked_Access,
             Gate_On_Hi    => Activate,
-            Gate_On_Lo    => Deactivate));
+            Gate_On_Lo    => Deactivate),
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
 
       Notif : constant Aura.Notification.Notification_Ref :=
         new Aura.Notification.Notification_Object;
@@ -677,7 +741,8 @@ procedure Aura_Selftest is
            (Kind         => Signal_Notification_Action,
             Notif_Target => (Target => Notif,
                              Expected_Epoch => Notif.Header.Epoch),
-            Notif_Bit    => 2#1#));
+            Notif_Bit    => 2#1#),
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
 
       St : Kernel_Error;
    begin
