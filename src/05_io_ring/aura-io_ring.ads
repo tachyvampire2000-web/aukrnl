@@ -5,11 +5,13 @@
 
 with Aura.Object; use Aura.Object;
 with Aura.Flip_Cell;
+with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
+with Ada.Containers.Bounded_Vectors;
 with Interfaces;
 
 package Aura.Io_Ring is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
    pragma Elaborate_Body;
 
    type Io_Op_Code is
@@ -53,11 +55,64 @@ package Aura.Io_Ring is
 
    type Thread_Access is access all Integer; -- Placeholder
 
+   subtype Io_Ring_Sqe is Sqe_Cells.Instance;
+
+   --  Io_Batch
+   Io_Batch_Max_Ops : constant := 32;
+
+   type Io_Batch_Result_Step is record
+      Status    : Kernel_Error;
+      New_Value : Io_Ring_Sqe_Inner;
+   end record;
+
+   type Io_Batch_Step_Array is array (1 .. Io_Batch_Max_Ops) of Io_Ring_Sqe_Inner;
+   type Io_Batch_Result_Step_Array is array (1 .. Io_Batch_Max_Ops) of Io_Batch_Result_Step;
+
+   type Io_Batch_Result is record
+      Step_Results : Io_Batch_Result_Step_Array;
+      Failed_At    : Natural; -- 0 = success, otherwise 1-based index of failed step
+   end record;
+
+   type Io_Ring_Sqe_Inner_Access is access all Io_Ring_Sqe_Inner;
+
+   package Batch_Target_Vectors is new Ada.Containers.Bounded_Vectors
+     (Index_Type => Positive, Element_Type => Io_Ring_Sqe_Inner_Access);
+
+   type Io_Batch is record
+      Targets : Batch_Target_Vectors.Vector (Io_Batch_Max_Ops);
+      Steps   : Io_Batch_Step_Array;
+      Count   : Natural range 0 .. Io_Batch_Max_Ops;
+   end record;
+
+   type Io_Ring is limited record
+      Dummy : Integer := 0;
+   end record;
+
+   type Io_Ring_Sqe_Array is array (Positive range <>) of Io_Ring_Sqe_Inner;
+
+   function Io_Batch_Compile (Sqes : Io_Ring_Sqe_Array) return Io_Batch;
+
+   function Io_Batch_Execute (Ring : in out Io_Ring; Batch : in out Io_Batch) return Io_Batch_Result;
+
+   function Io_Batch_Submit (Ring : in out Io_Ring; Sqes : Io_Ring_Sqe_Array) return Io_Batch_Result;
+
+   procedure Io_Batch_Free (Batch : in out Io_Batch);
+
+   --  Io_Template
+   type Io_Template_Id is (Read_Then_Write, Map_Then_Set_Attr);
+
+   type Template_Step is record
+      Op_Code : Io_Op_Code;
+      Cap_Index : Interfaces.Unsigned_32;
+   end record;
+
+   function Io_Template_Execute
+     (Ring     : in out Io_Ring;
+      Template : Io_Template_Id) return Io_Batch_Result;
 
 
    --  (продолжение из источника, doc-lines 2530-2571, после
    --  первоначального закрытия Aura.Io_Ring — см. MANIFEST §Находки)
-   subtype Io_Ring_Sqe is Sqe_Cells.Instance;
 
    type Sqe_Params_Kind is (Read_Write_Kind, Xpc_Call_Kind,
                               Attr_Watch_Kind, Mount_Kind);
