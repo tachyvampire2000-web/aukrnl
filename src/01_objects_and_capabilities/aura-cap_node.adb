@@ -2,6 +2,7 @@
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Ada.Containers.Bounded_Vectors;
+with Aura.Hal;
 
 package body Aura.Cap_Node is
 
@@ -109,12 +110,86 @@ package body Aura.Cap_Node is
                Node.Parent.First_Child := Node.Next_Sibling;
             end if;
 
-            -- Free the node slot
-            Free (Node);
+            -- Retire the node slot instead of immediate Free under EBR
+            Retire (Node);
          end if;
       end loop;
 
       Status := Ok;
    end Cap_Revoke;
+
+   -- EBR implementation variables
+   Global_Reclamation_Epoch : Interfaces.Unsigned_32 := 1;
+   Active_Cpu_Epochs        : array (0 .. Aura.Hal.Max_Cpus - 1) of aliased Interfaces.Unsigned_32 := [others => 0];
+
+   Retired_Nodes            : array (1 .. Max_Cap_Nodes) of Cap_Node_Access := [others => null];
+   Retired_Epochs           : array (1 .. Max_Cap_Nodes) of Interfaces.Unsigned_32 := [others => 0];
+   Retired_Count            : Natural := 0;
+
+   procedure Enter_Critical_Section (Cpu : Natural) is
+   begin
+      if Cpu < Aura.Hal.Max_Cpus then
+         Active_Cpu_Epochs (Cpu) := Global_Reclamation_Epoch;
+      end if;
+   end Enter_Critical_Section;
+
+   procedure Leave_Critical_Section (Cpu : Natural) is
+   begin
+      if Cpu < Aura.Hal.Max_Cpus then
+         Active_Cpu_Epochs (Cpu) := 0; -- 0 represents inactive reader
+      end if;
+   end Leave_Critical_Section;
+
+   procedure Retire (Node : Cap_Node_Access) is
+   begin
+      if Node /= null and then Retired_Count < Max_Cap_Nodes then
+         Retired_Count := Retired_Count + 1;
+         Retired_Nodes (Retired_Count) := Node;
+         Retired_Epochs (Retired_Count) := Global_Reclamation_Epoch;
+      end if;
+   end Retire;
+
+   procedure Advance_Epoch_And_Reclaim is
+      use type Interfaces.Unsigned_32;
+      Safe_To_Free : Boolean;
+      Node_Epoch   : Interfaces.Unsigned_32;
+      I            : Positive := 1;
+   begin
+      -- Increment the global reclamation epoch
+      Global_Reclamation_Epoch := Global_Reclamation_Epoch + 1;
+
+      -- Iterate and reclaim safe nodes
+      while I <= Retired_Count loop
+         Node_Epoch := Retired_Epochs (I);
+         Safe_To_Free := True;
+
+         for Cpu in 0 .. Aura.Hal.Max_Cpus - 1 loop
+            declare
+               Cpu_Epoch : constant Interfaces.Unsigned_32 := Active_Cpu_Epochs (Cpu);
+            begin
+               if Cpu_Epoch /= 0 and then Cpu_Epoch <= Node_Epoch then
+                  Safe_To_Free := False;
+                  exit;
+               end if;
+            end;
+         end loop;
+
+         if Safe_To_Free then
+            -- Safely free the memory
+            Free (Retired_Nodes (I));
+
+            -- Shift remaining elements
+            for J in I .. Retired_Count - 1 loop
+               Retired_Nodes (J) := Retired_Nodes (J + 1);
+               Retired_Epochs (J) := Retired_Epochs (J + 1);
+            end loop;
+            Retired_Nodes (Retired_Count) := null;
+            Retired_Epochs (Retired_Count) := 0;
+            Retired_Count := Retired_Count - 1;
+         else
+            I := I + 1;
+         end if;
+      end loop;
+   end Advance_Epoch_And_Reclaim;
 
 end Aura.Cap_Node;

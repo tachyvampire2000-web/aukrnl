@@ -346,10 +346,14 @@ procedure Aura_Selftest is
    begin
       T1.State := Ready;
       T1.Active_Sched_Ctx := T1.Own_Sched_Ctx'Unchecked_Access;
+      T1.Own_Sched_Ctx.Budget_Us := 10000;
+      T1.Own_Sched_Ctx.Remaining_Us := 10000;
       T1.Own_Sched_Ctx.Deadline_Tick := 20;
 
       T2.State := Ready;
       T2.Active_Sched_Ctx := T2.Own_Sched_Ctx'Unchecked_Access;
+      T2.Own_Sched_Ctx.Budget_Us := 10000;
+      T2.Own_Sched_Ctx.Remaining_Us := 10000;
       T2.Own_Sched_Ctx.Deadline_Tick := 10;
 
       Sched_Add_Thread (0, T1'Unchecked_Access);
@@ -366,6 +370,131 @@ procedure Aura_Selftest is
       Check ("sched: EDF scheduler adapts and selects T1 after deadline change",
              Current_Thread = T1'Unchecked_Access);
    end Test_EDF_Scheduling;
+
+   procedure Test_CBS_Scheduling is
+      use Aura.Thread;
+      use Aura.Sched;
+      use type Aura.Thread.Thread_Access;
+      use type Interfaces.Unsigned_64;
+
+      T_Cbs : aliased Thread;
+   begin
+      -- Set up a task with a limited budget and period
+      T_Cbs.State := Ready;
+      T_Cbs.Active_Sched_Ctx := T_Cbs.Own_Sched_Ctx'Unchecked_Access;
+      T_Cbs.Own_Sched_Ctx.Budget_Us := 2000;      -- 2 ticks
+      T_Cbs.Own_Sched_Ctx.Period_Us := 10000;     -- 10 ticks
+      T_Cbs.Own_Sched_Ctx.Remaining_Us := 2000;
+      T_Cbs.Own_Sched_Ctx.Deadline_Tick := 10;
+
+      -- Clear ready queue for Cpu 0 to avoid leftovers
+      Run_Queues (0).Ready_Count := 0;
+      Run_Queues (0).Current := T_Cbs'Unchecked_Access;
+      Sched_Add_Thread (0, T_Cbs'Unchecked_Access);
+
+      -- Tick 1: decrement Remaining_Us
+      declare
+         Dec : Scheduler_Decision;
+      begin
+         Dec := Run_Queues (0).Scheduler_Tick (Now => 1);
+         Check ("sched: CBS decrements Remaining_Us correctly on tick 1",
+                T_Cbs.Own_Sched_Ctx.Remaining_Us = 1000 and Dec /= Preempt);
+      end;
+
+      -- Tick 2: decrement Remaining_Us to 0. Since Now = 2 < Deadline_Tick (10), it should preempt/throttle!
+      declare
+         Dec : Scheduler_Decision;
+      begin
+         Dec := Run_Queues (0).Scheduler_Tick (Now => 2);
+         Check ("sched: CBS exhausts budget and preemption occurs",
+                T_Cbs.Own_Sched_Ctx.Remaining_Us = 0 and Dec = Preempt);
+      end;
+
+      -- Try to Schedule at Now = 3. Since budget is exhausted and Now (3) < Deadline_Tick (10), the thread is throttled and scheduler falls back to Boot_Thread!
+      Schedule (0, Now => 3);
+      Check ("sched: CBS throttles exhausted thread and falls back to boot thread",
+             Current_Thread /= T_Cbs'Unchecked_Access);
+
+      -- At Now = 10 (Deadline_Tick reached), scheduling again should trigger CBS replenishment!
+      Schedule (0, Now => 10);
+      Check ("sched: CBS replenishes budget on demand when deadline is reached",
+             T_Cbs.Own_Sched_Ctx.Remaining_Us = 2000 and Current_Thread = T_Cbs'Unchecked_Access);
+   end Test_CBS_Scheduling;
+
+   procedure Test_EBR_Reclamation is
+      use Aura.Cap_Node;
+      N1, N2 : Cap_Node_Access;
+      St     : Kernel_Error;
+   begin
+      -- Alloc N1 and N2
+      Alloc (1, N1, St);
+      Check ("ebr: alloc N1 ok", St = Ok and N1 /= null);
+      Alloc (1, N2, St);
+      Check ("ebr: alloc N2 ok", St = Ok and N2 /= null);
+
+      -- Put CPU 0 in critical section (epoch 1)
+      Enter_Critical_Section (0);
+
+      -- Revoke (retires Node N1)
+      Cap_Revoke (N1, St);
+      Check ("ebr: N1 revoked and retired", St = Ok);
+
+      -- Reclaim attempt 1: CPU 0 is active in epoch 1, so N1 cannot be reclaimed yet
+      Advance_Epoch_And_Reclaim;
+
+      -- Put CPU 0 out of critical section
+      Leave_Critical_Section (0);
+
+      -- Reclaim attempt 2: CPU 0 is inactive, so N1 is reclaimed
+      Advance_Epoch_And_Reclaim;
+
+      -- Free N2 manually
+      Free (N2);
+      Check ("ebr: EBR reclamation verified successfully", True);
+   end Test_EBR_Reclamation;
+
+   procedure Test_Group_Reincarnation is
+      use Aura.Reincarnation;
+      use type Interfaces.Unsigned_32;
+      C_Head   : aliased Reincarnation_Contract;
+      C_Child1 : aliased Reincarnation_Contract;
+      C_Child2 : aliased Reincarnation_Contract;
+   begin
+      -- Set up head
+      C_Head.Restart_Strategy_Field := One_For_All;
+      C_Head.Group_Head := (Present => False); -- Head has no head
+      C_Head.Next_In_Group := C_Child1'Unchecked_Access;
+      C_Head.Sibling_Order := 0;
+      C_Head.Restart_Count := 0;
+
+      -- Set up child 1
+      C_Child1.Restart_Strategy_Field := Rest_For_One;
+      C_Child1.Group_Head := (Present => True, Value => C_Head'Unchecked_Access);
+      C_Child1.Next_In_Group := C_Child2'Unchecked_Access;
+      C_Child1.Sibling_Order := 1;
+      C_Child1.Restart_Count := 0;
+
+      -- Set up child 2
+      C_Child2.Restart_Strategy_Field := One_For_One;
+      C_Child2.Group_Head := (Present => True, Value => C_Head'Unchecked_Access);
+      C_Child2.Next_In_Group := null;
+      C_Child2.Sibling_Order := 2;
+      C_Child2.Restart_Count := 0;
+
+      -- Test 1: One_For_All on C_Head should restart C_Child1 and C_Child2
+      Apply_Restart_Strategy (C_Head, Forced => False);
+      Check ("reincarnation: One_For_All restarts all children in group",
+             C_Child1.Restart_Count = 1 and C_Child2.Restart_Count = 1);
+
+      -- Reset counts
+      C_Child1.Restart_Count := 0;
+      C_Child2.Restart_Count := 0;
+
+      -- Test 2: Rest_For_One on C_Child1 (Sibling 1) should restart C_Child2 (Sibling 2) but NOT C_Head (Sibling 0)
+      Apply_Restart_Strategy (C_Child1, Forced => False);
+      Check ("reincarnation: Rest_For_One restarts subsequent siblings correctly",
+             C_Child2.Restart_Count = 1 and C_Head.Restart_Count = 0 and C_Child1.Restart_Count = 0);
+   end Test_Group_Reincarnation;
 
    procedure Test_RCU_Epoch is
       use Aura.Rcu;
@@ -476,6 +605,26 @@ procedure Aura_Selftest is
       Check ("channel: Task_Force Shared_Memory_Budget correctly stored", Tf.Shared_Memory_Budget = 9999);
       Check ("channel: Task_Force Shared_Io_Budget correctly stored", Tf.Shared_Io_Budget = 8888);
 
+      -- Test Decrement Memory
+      declare
+         Exhausted : Boolean;
+      begin
+         Exhausted := Task_Force_Decrement_Memory (Tf, 5000);
+         Check ("channel: Task_Force Shared_Memory_Budget decremented correctly", Tf.Shared_Memory_Budget = 4999 and not Exhausted);
+         Exhausted := Task_Force_Decrement_Memory (Tf, 5000);
+         Check ("channel: Task_Force Shared_Memory_Budget saturated/exhausted correctly", Tf.Shared_Memory_Budget = 0 and Exhausted);
+      end;
+
+      -- Test Decrement IO
+      declare
+         Exhausted : Boolean;
+      begin
+         Exhausted := Task_Force_Decrement_Io (Tf, 4000);
+         Check ("channel: Task_Force Shared_Io_Budget decremented correctly", Tf.Shared_Io_Budget = 4888 and not Exhausted);
+         Exhausted := Task_Force_Decrement_Io (Tf, 5000);
+         Check ("channel: Task_Force Shared_Io_Budget saturated/exhausted correctly", Tf.Shared_Io_Budget = 0 and Exhausted);
+      end;
+
       -- 3
       Contract.Associated_Watchdog := System.Null_Address;
       Check ("reincarnation: Associated_Watchdog correctly initialized", Contract.Associated_Watchdog = System.Null_Address);
@@ -568,6 +717,9 @@ begin
    Test_Budget_Donation;
    Test_Deadline_Timers;
    Test_EDF_Scheduling;
+   Test_CBS_Scheduling;
+   Test_EBR_Reclamation;
+   Test_Group_Reincarnation;
    Test_RCU_Epoch;
    Test_Fault_Delegation;
    Test_NMI_Watchdog;

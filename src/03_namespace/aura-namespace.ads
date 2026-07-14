@@ -38,7 +38,7 @@ package Aura.Namespace is
       Parent          : Namespace_Node_Weak_Ref;
       First_Child     : Namespace_Node_Access;
       Next_Sibling    : Namespace_Node_Access;
-      Union_Target    : Namespace_Node_Access;
+      Union_Target    : Namespace_Node_Access; --  A_Union (AUFS-подобное объединение слоев Im)
       Union_Priority  : Interfaces.Unsigned_32;
       Is_Union        : Boolean;
       Attributes      : Attr_Table;

@@ -5,6 +5,7 @@ package body Aura.Sched is
 
    use type Interfaces.Unsigned_64;
    use type Aura.Thread.Thread_Access;
+   use type Aura.Thread.Sched_Ctx_Access;
 
    Boot_Thread : aliased Aura.Thread.Thread;
 
@@ -28,9 +29,34 @@ package body Aura.Sched is
      (Self : in out Run_Queue;
       Now  : Interfaces.Unsigned_64) return Scheduler_Decision
    is
-      pragma Unreferenced (Now);
+      Tick_Duration_Us : constant := 1000;
    begin
       Self.Tick_Count := Self.Tick_Count + 1;
+
+      -- Apply CBS budget decrement to current running thread
+      if Self.Current /= null and then Self.Current.Active_Sched_Ctx /= null then
+         declare
+            Ctx : constant Aura.Thread.Sched_Ctx_Access := Self.Current.Active_Sched_Ctx;
+         begin
+            if Ctx.Remaining_Us >= Tick_Duration_Us then
+               Ctx.Remaining_Us := Ctx.Remaining_Us - Tick_Duration_Us;
+            else
+               Ctx.Remaining_Us := 0;
+            end if;
+
+            if Ctx.Remaining_Us = 0 then
+               if Now >= Ctx.Deadline_Tick then
+                  -- Period ended, replenish budget and set next deadline
+                  Ctx.Remaining_Us := Ctx.Budget_Us;
+                  Ctx.Deadline_Tick := Now + Ctx.Period_Us / Tick_Duration_Us;
+               else
+                  -- Exhausted within current period: force preemption (throttling)
+                  return Preempt;
+               end if;
+            end if;
+         end;
+      end if;
+
       if Self.Tick_Count mod Self.Quantum_Ticks = 0 then
          return Preempt;
       end if;
@@ -38,30 +64,49 @@ package body Aura.Sched is
    end Scheduler_Tick;
 
    procedure Schedule (Cpu : Natural; Now : Interfaces.Unsigned_64) is
-      pragma Unreferenced (Now);
       use type Aura.Thread.Thread_State;
       use type Aura.Thread.Sched_Ctx_Access;
       Best_Thread   : Aura.Thread.Thread_Access := null;
       Best_Deadline : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
       Candidate     : Aura.Thread.Thread_Access;
+      Tick_Duration_Us : constant := 1000;
    begin
-      -- EDF algorithm: find ready/running thread with the earliest absolute deadline tick
+      -- EDF algorithm: find ready/running thread with the earliest absolute deadline tick, accounting for CBS budget exhaustion/replenishment
       for I in 1 .. Run_Queues (Cpu).Ready_Count loop
          Candidate := Run_Queues (Cpu).Ready_Threads (I);
          if Candidate /= null
            and then (Candidate.State = Aura.Thread.Ready or else Candidate.State = Aura.Thread.Running)
          then
-            if Candidate.Active_Sched_Ctx /= null then
-               if Candidate.Active_Sched_Ctx.Deadline_Tick < Best_Deadline then
-                  Best_Deadline := Candidate.Active_Sched_Ctx.Deadline_Tick;
-                  Best_Thread   := Candidate;
+            declare
+               Is_Throttled : Boolean := False;
+               Ctx          : constant Aura.Thread.Sched_Ctx_Access := Candidate.Active_Sched_Ctx;
+            begin
+               if Ctx /= null then
+                  if Ctx.Remaining_Us = 0 then
+                     if Now >= Ctx.Deadline_Tick then
+                        -- Replenish on demand
+                        Ctx.Remaining_Us := Ctx.Budget_Us;
+                        Ctx.Deadline_Tick := Now + Ctx.Period_Us / Tick_Duration_Us;
+                     else
+                        Is_Throttled := True;
+                     end if;
+                  end if;
                end if;
-            else
-               -- No deadline (best-effort), treat as max deadline
-               if Best_Thread = null then
-                  Best_Thread := Candidate;
+
+               if not Is_Throttled then
+                  if Ctx /= null then
+                     if Ctx.Deadline_Tick < Best_Deadline then
+                        Best_Deadline := Ctx.Deadline_Tick;
+                        Best_Thread   := Candidate;
+                     end if;
+                  else
+                     -- No deadline (best-effort), treat as max deadline
+                     if Best_Thread = null then
+                        Best_Thread := Candidate;
+                     end if;
+                  end if;
                end if;
-            end if;
+            end;
          end if;
       end loop;
 

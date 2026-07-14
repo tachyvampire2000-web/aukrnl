@@ -9,7 +9,7 @@ with System;
 
 package Aura.Reincarnation is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
 
    type Process_Context_Ref is access all Integer; -- Placeholder
    type Cap_Any_Ref is access all Integer; -- Placeholder
@@ -67,5 +67,15 @@ package Aura.Reincarnation is
       Name       : Mount_Log_Name;
    end record
      with Convention => C;
+
+   procedure Supervisor_Tick
+     (Contract : aliased in out Reincarnation_Contract; Now : Interfaces.Unsigned_64);
+
+   procedure Kill_Process (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref);
+   procedure Respawn_From_Template
+     (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref; New_Ctx : out Process_Context_Ref);
+   procedure Rebind_Namespace_Mounts (Proc : Process_Context_Ref; Contract : Reincarnation_Contract);
+   procedure Contract_Escalation (Contract : in out Reincarnation_Contract);
+   procedure Apply_Restart_Strategy (Contract : aliased in out Reincarnation_Contract; Forced : Boolean);
 
 end Aura.Reincarnation;
