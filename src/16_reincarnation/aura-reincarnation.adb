@@ -1,9 +1,13 @@
 --  AURA Kernel — Reincarnation Contracts implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Aura.Watchdog;
+with System;
+
 package body Aura.Reincarnation is
 
    use type Interfaces.Unsigned_32;
+   use type System.Address;
 
    procedure Kill_Process (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref) is
       pragma Unreferenced (Proc, Respawn_Cap);
@@ -52,6 +56,10 @@ package body Aura.Reincarnation is
          Curr.Supervised := New_Ctx;
          Curr.Restart_Count := Curr.Restart_Count + 1;
          Curr.Last_Heartbeat_Tick := Now;
+
+         if Curr.Associated_Watchdog /= System.Null_Address then
+            Aura.Watchdog.Reset_Watchdog_Heartbeat (Curr.Associated_Watchdog);
+         end if;
       end if;
    end Restart_Single_Contract;
 
@@ -127,5 +135,36 @@ package body Aura.Reincarnation is
          Apply_Restart_Strategy (Contract, Forced => False);
       end if;
    end Supervisor_Tick;
+
+   procedure Hot_Swap_Respawn
+     (Contract     : aliased in out Reincarnation_Contract;
+      New_Template : Cap_Any_Ref;
+      Status       : out Kernel_Error)
+   is
+      New_Ctx : Process_Context_Ref;
+   begin
+      if New_Template = null then
+         Status := Invalid_Argument;
+         return;
+      end if;
+
+      -- 1. Update Respawn template to the new version
+      Contract.Respawn_Cap := New_Template;
+
+      -- 2. Terminate the old process context gracefully
+      Kill_Process (Contract.Supervised, New_Template);
+
+      -- 3. Respawn the new version context from the new template cap
+      Respawn_From_Template (Contract.Supervised, New_Template, New_Ctx);
+
+      -- 4. Rebind all namespace mounts and migrate capabilities to the new context
+      Rebind_Namespace_Mounts (New_Ctx, Contract);
+
+      -- 5. Update supervised context, reset restart counters for the new component
+      Contract.Supervised := New_Ctx;
+      Contract.Restart_Count := 0;
+
+      Status := Ok;
+   end Hot_Swap_Respawn;
 
 end Aura.Reincarnation;

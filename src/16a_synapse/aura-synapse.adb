@@ -5,12 +5,15 @@
 
 with Aura.Wait_Queue;
 with Aura.Timer;
+with Aura.Thread;
 
 package body Aura.Synapse is
 
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type Aura.Notification.Notification_Ref;
+   use type Aura.Thread.Thread_Access;
+   use type Aura.Thread.Sched_Ctx_Access;
 
    type Fire_Direction is (Fired_Hi, Fired_Lo);
 
@@ -175,6 +178,21 @@ package body Aura.Synapse is
       end if;
 
       Syn.Charge := New_Charge;
+
+      -- SDRP Priority Boost: If Syn has an associated thread, boost its priority by reducing its Deadline_Tick
+      if Syn.Sdrp_Thread /= null and then Syn.Sdrp_Thread.Active_Sched_Ctx /= null then
+         if New_Charge > 0 then
+            declare
+               use type Interfaces.Unsigned_64;
+               Boost : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (New_Charge);
+            begin
+               if Syn.Sdrp_Thread.Active_Sched_Ctx.Deadline_Tick > Boost then
+                  Syn.Sdrp_Thread.Active_Sched_Ctx.Deadline_Tick :=
+                    Syn.Sdrp_Thread.Active_Sched_Ctx.Deadline_Tick - Boost;
+               end if;
+            end;
+         end if;
+      end if;
 
       if New_Charge >= Syn.Threshold_Hi then
          case Syn.Reset_Mode_Field is

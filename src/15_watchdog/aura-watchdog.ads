@@ -11,6 +11,7 @@ with Aura.Notification;
 with Aura.Reincarnation;
 with Ada.Containers.Bounded_Vectors;
 with Interfaces;
+with System;
 
 package Aura.Watchdog is
 
@@ -182,5 +183,8 @@ package Aura.Watchdog is
 
    function Saturating_Sub_U64
      (A, B : Interfaces.Unsigned_64) return Interfaces.Unsigned_64;
+
+   --  Сбросить Watchdog по его адресу (для группового перезапуска Reincarnation_Contract)
+   procedure Reset_Watchdog_Heartbeat (Wd_Addr : System.Address);
 
 end Aura.Watchdog;

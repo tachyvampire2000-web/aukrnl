@@ -6,6 +6,7 @@ with Aura.Timer;
 
 package body Aura.Watchdog is
 
+   use type System.Address;
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
    use type Ada.Containers.Count_Type;
@@ -287,5 +288,32 @@ package body Aura.Watchdog is
       end loop;
       Watchdogs.Unlock (Reg);
    end Watchdog_Tick;
+
+   procedure Reset_Watchdog_Heartbeat (Wd_Addr : System.Address) is
+      Reg : Watchdog_Vectors.Vector (Watchdog_Max);
+      Watched_Alive : Boolean;
+      Watched       : Thread_Ref;
+   begin
+      if Wd_Addr = System.Null_Address then
+         return;
+      end if;
+
+      Watchdogs.Lock (Reg);
+      for I in 1 .. Natural (Watchdog_Vectors.Length (Reg)) loop
+         declare
+            Wd : constant Watchdog_Ref := Watchdog_Vectors.Element (Reg, I);
+         begin
+            if Wd.all'Address = Wd_Addr then
+               -- Found! Reset the watched thread's last syscall/heartbeat tick to prevent expiration
+               Upgrade (Wd.Watched, Watched, Watched_Alive);
+               if Watched_Alive then
+                  Watched.Last_Syscall_Tick := Aura.Timer.Current_Tick;
+               end if;
+               exit;
+            end if;
+         end;
+      end loop;
+      Watchdogs.Unlock (Reg);
+   end Reset_Watchdog_Heartbeat;
 
 end Aura.Watchdog;

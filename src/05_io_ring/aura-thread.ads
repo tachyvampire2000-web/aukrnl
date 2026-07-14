@@ -6,6 +6,7 @@
 with Aura.Object; use Aura.Object;
 with Aura.Flip_Cell;
 with Aura.Ring;
+with Aura.Mac;
 with System.Storage_Elements;
 with Interfaces;
 
@@ -83,6 +84,7 @@ package Aura.Thread is
       Last_Syscall_Tick    : aliased Interfaces.Unsigned_64;  -- T64: watchdog
       Ring_Level           : Aura.Ring.Ring_Level;            -- fix-013
       State                : aliased Thread_State;
+      Taint                : aliased Aura.Mac.Causal_Taint;   -- CIFC Taint tracking
    end record
      with Volatile;
 

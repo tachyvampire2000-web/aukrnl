@@ -8,6 +8,7 @@ with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Rights; use Aura.Rights;
 with Aura.Notification;
 with Aura.Cap_Policy;
+with Aura.Thread;
 with Ada.Containers.Bounded_Vectors;
 with Interfaces;
 
@@ -171,6 +172,8 @@ package Aura.Synapse is
       --  Предотвращение переполнения заряда (Charge Saturation)
       Max_Charge_Cap : Interfaces.Integer_32 := 100000;
       Min_Charge_Cap : Interfaces.Integer_32 := -100000;
+      --  SDRP (Synapse-driven Adaptive Real-time Priority)
+      Sdrp_Thread    : Aura.Thread.Thread_Access := null;
    end record
      with Volatile;
 

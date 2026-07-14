@@ -19,6 +19,7 @@ with Aura.Package_Fs;
 with Aura.Cap_Node;
 with Aura.Iommu;
 with Aura.Thread;
+with Aura.Mac;
 with Aura.Timer;
 with System;
 with Aura.Rcu;
@@ -186,7 +187,8 @@ procedure Aura_Selftest is
          Action =>
            (Kind   => Execute_Sealed_Action,
             Sealed => Call'Unchecked_Access),
-         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>,
+         Sdrp_Thread => <>);
    begin
       Sealed_Cap_Vectors.Append (Call.Caps, C1);
       St := Sealed_Call_Execute (Call);
@@ -457,17 +459,32 @@ procedure Aura_Selftest is
 
    procedure Test_Group_Reincarnation is
       use Aura.Reincarnation;
+      use Aura.Watchdog;
+      use Aura.Thread;
       use type Interfaces.Unsigned_32;
+      use type Interfaces.Unsigned_64;
+      use type System.Address;
+
       C_Head   : aliased Reincarnation_Contract;
       C_Child1 : aliased Reincarnation_Contract;
       C_Child2 : aliased Reincarnation_Contract;
+
+      Th_Child1 : aliased Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+      Wd_Child1 : aliased Watchdog := (Header => <>, Watched => Downgrade (Th_Child1'Unchecked_Access), Period => 5, Notify_Ref => (Target => null, Expected_Epoch => 0), Policy => Notify, Contract => Empty_Weak_Ref);
+      Reg       : Watchdog_Vector;
    begin
+      -- Register Watchdog
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Append (Reg, Wd_Child1'Unchecked_Access);
+      Watchdogs.Unlock (Reg);
+
       -- Set up head
       C_Head.Restart_Strategy_Field := One_For_All;
       C_Head.Group_Head := (Present => False); -- Head has no head
       C_Head.Next_In_Group := C_Child1'Unchecked_Access;
       C_Head.Sibling_Order := 0;
       C_Head.Restart_Count := 0;
+      C_Head.Associated_Watchdog := System.Null_Address;
 
       -- Set up child 1
       C_Child1.Restart_Strategy_Field := Rest_For_One;
@@ -475,6 +492,7 @@ procedure Aura_Selftest is
       C_Child1.Next_In_Group := C_Child2'Unchecked_Access;
       C_Child1.Sibling_Order := 1;
       C_Child1.Restart_Count := 0;
+      C_Child1.Associated_Watchdog := Wd_Child1'Address;
 
       -- Set up child 2
       C_Child2.Restart_Strategy_Field := One_For_One;
@@ -482,11 +500,15 @@ procedure Aura_Selftest is
       C_Child2.Next_In_Group := null;
       C_Child2.Sibling_Order := 2;
       C_Child2.Restart_Count := 0;
+      C_Child2.Associated_Watchdog := System.Null_Address;
 
-      -- Test 1: One_For_All on C_Head should restart C_Child1 and C_Child2
+      -- Test 1: One_For_All on C_Head should restart C_Child1 and C_Child2, resetting the associated Watchdog
+      Th_Child1.Last_Syscall_Tick := 0;
       Apply_Restart_Strategy (C_Head, Forced => False);
       Check ("reincarnation: One_For_All restarts all children in group",
              C_Child1.Restart_Count = 1 and C_Child2.Restart_Count = 1);
+      Check ("watchdog: Associated watchdog of child 1 was successfully reset during group restart",
+             Th_Child1.Last_Syscall_Tick /= 0);
 
       -- Reset counts
       C_Child1.Restart_Count := 0;
@@ -539,6 +561,64 @@ procedure Aura_Selftest is
       end;
    end Test_Io_Batch_And_Template;
 
+   procedure Test_Conceptual_Extensions is
+      use Aura.Mac;
+      use Aura.Thread;
+      use Aura.Synapse;
+      use Aura.Reincarnation;
+      use type Interfaces.Unsigned_8;
+      use type Interfaces.Unsigned_32;
+      use type Interfaces.Unsigned_64;
+      use type Interfaces.Integer_32;
+
+      Taint   : Causal_Taint;
+      Secret  : constant Mandatory_Label := (Level => 5, Categories => 2#101#);
+      Low_Sec : constant Mandatory_Label := (Level => 3, Categories => 2#101#);
+      Hi_Sec  : constant Mandatory_Label := (Level => 6, Categories => 2#111#);
+      St      : Kernel_Error;
+
+      Th      : aliased Aura.Thread.Thread;
+      Sdrp_Syn : aliased Synapse :=
+        (Header => <>, Charge => 0, Threshold_Hi => 20,
+         Threshold_Lo => (Present => False),
+         Reset_Mode_Field => To_Zero,
+         Decay => (Present => False),
+         Action => (Kind => Reject_If_Saturated_Action),
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>,
+         Sdrp_Thread => Th'Unchecked_Access);
+
+      Contract : aliased Reincarnation_Contract;
+      Tpl      : aliased Integer := 99;
+   begin
+      -- 1. CIFC (Causal Information Flow Control) Test
+      Propagate_Taint (Taint, Secret);
+      Check ("cifc: taint successfully propagated", Taint.Tainted and Taint.Taint_Level = 5);
+
+      St := Check_Flow (Taint, Low_Sec);
+      Check ("cifc: write-down to lower security level blocked", St = Write_Down_Violation);
+
+      St := Check_Flow (Taint, Hi_Sec);
+      Check ("cifc: write-up or write-equal with matching categories allowed", St = Ok);
+
+      -- 2. SDRP (Synapse-driven Adaptive Real-time Priority) Test
+      Th.State := Ready;
+      Th.Active_Sched_Ctx := Th.Own_Sched_Ctx'Unchecked_Access;
+      Th.Own_Sched_Ctx.Deadline_Tick := 100;
+
+      St := Synapse_Apply_Delta (Sdrp_Syn, 10);
+      Check ("sdrp: synapse activity successfully boosts scheduling priority/reduces deadline",
+             St = Ok and Th.Own_Sched_Ctx.Deadline_Tick = 90);
+
+      -- 3. Capabilities Hot-Swapping Test
+      Contract.Restart_Strategy_Field := One_For_One;
+      Contract.Respawn_Cap := null;
+      Contract.Restart_Count := 3;
+
+      Hot_Swap_Respawn (Contract, Tpl'Unchecked_Access, St);
+      Check ("reincarnation: hot-swapping respawn template and migrating capabilities succeeds",
+             St = Ok and Contract.Respawn_Cap = Tpl'Unchecked_Access and Contract.Restart_Count = 0);
+   end Test_Conceptual_Extensions;
+
    procedure Test_RCU_Epoch is
       use Aura.Rcu;
       Cb : Rcu_Callback := (Kind => Drop_Object, Object_Ref => System.Null_Address);
@@ -575,7 +655,7 @@ procedure Aura_Selftest is
    procedure Test_NMI_Watchdog is
       use Aura.Watchdog;
       use Aura.Thread;
-      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready);
+      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
       Wd : aliased Watchdog := (Header => <>, Watched => Downgrade (Th'Unchecked_Access), Period => 5, Notify_Ref => (Target => null, Expected_Epoch => 0), Policy => Notify, Contract => Empty_Weak_Ref);
       Reg : Watchdog_Vector;
       Succ : Boolean;
@@ -628,7 +708,8 @@ procedure Aura_Selftest is
          Action =>
            (Kind     => Trace_Event_Action,
             Trace_Id => 123456789),
-         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>,
+         Sdrp_Thread => <>);
 
       Lim_Syn : aliased Synapse :=
         (Header => <>, Charge => 0, Threshold_Hi => 5,
@@ -637,7 +718,8 @@ procedure Aura_Selftest is
          Decay => (Present => False),
          Action =>
            (Kind => Reject_If_Saturated_Action),
-         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>,
+         Sdrp_Thread => <>);
 
       St : Kernel_Error;
    begin
@@ -693,7 +775,8 @@ procedure Aura_Selftest is
            (Header => <>, Charge => 0, Threshold_Hi => 20, -- won't fire on 10
             Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
             Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
-            Max_Charge_Cap => 10, Min_Charge_Cap => -10);
+            Max_Charge_Cap => 10, Min_Charge_Cap => -10,
+            Sdrp_Thread => <>);
       begin
          St := Synapse_Apply_Delta (Sat_Syn, 15);
          Check ("synapse: charge is correctly saturated/clamped to Max_Charge_Cap",
@@ -706,7 +789,8 @@ procedure Aura_Selftest is
            (Header => <>, Charge => 0, Threshold_Hi => 10,
             Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
             Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
-            Max_Charge_Cap => 100, Min_Charge_Cap => -100);
+            Max_Charge_Cap => 100, Min_Charge_Cap => -100,
+            Sdrp_Thread => <>);
 
          Tap : aliased Synapse_Tap :=
            (Header => <>, Target => Downgrade (T_Syn'Unchecked_Access),
@@ -728,7 +812,8 @@ procedure Aura_Selftest is
             Action => (Kind => Feed_Synapse_Action,
                        Synapse_Target => (Target => null, Expected_Epoch => 0),
                        Feed_Kind => (Tag => Positive_Signal, Positive_N => 0)),
-            Max_Charge_Cap => 100, Min_Charge_Cap => -100);
+            Max_Charge_Cap => 100, Min_Charge_Cap => -100,
+            Sdrp_Thread => <>);
 
          Syn_A : aliased Synapse :=
            (Header => <>, Charge => 0, Threshold_Hi => 1,
@@ -737,7 +822,8 @@ procedure Aura_Selftest is
             Action => (Kind => Feed_Synapse_Action,
                        Synapse_Target => Downgrade (Syn_B'Unchecked_Access),
                        Feed_Kind => (Tag => Positive_Signal, Positive_N => 0)),
-            Max_Charge_Cap => 100, Min_Charge_Cap => -100);
+            Max_Charge_Cap => 100, Min_Charge_Cap => -100,
+            Sdrp_Thread => <>);
       begin
          Syn_B.Action.Synapse_Target := Downgrade (Syn_A'Unchecked_Access);
          Last_Fired_Trace_Id := 0;
@@ -768,7 +854,8 @@ procedure Aura_Selftest is
             Policy_Target => Gated'Unchecked_Access,
             Gate_On_Hi    => Activate,
             Gate_On_Lo    => Deactivate),
-         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>,
+         Sdrp_Thread => <>);
 
       Notif : constant Aura.Notification.Notification_Ref :=
         new Aura.Notification.Notification_Object;
@@ -784,7 +871,8 @@ procedure Aura_Selftest is
             Notif_Target => (Target => Notif,
                              Expected_Epoch => Notif.Header.Epoch),
             Notif_Bit    => 2#1#),
-         Max_Charge_Cap => <>, Min_Charge_Cap => <>);
+         Max_Charge_Cap => <>, Min_Charge_Cap => <>,
+         Sdrp_Thread => <>);
 
       St : Kernel_Error;
    begin
@@ -828,6 +916,7 @@ begin
    Test_EBR_Reclamation;
    Test_Group_Reincarnation;
    Test_Io_Batch_And_Template;
+   Test_Conceptual_Extensions;
    Test_RCU_Epoch;
    Test_Fault_Delegation;
    Test_NMI_Watchdog;
