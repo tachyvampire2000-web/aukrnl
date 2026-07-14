@@ -339,4 +339,38 @@ package body Aura.Channel is
       end loop;
    end Task_Force_Decrement_Budget;
 
+   function Task_Force_Decrement_Memory
+     (Tf : in out Task_Force; Bytes : Interfaces.Unsigned_64) return Boolean
+   is
+      Cur, Next : Interfaces.Unsigned_64;
+      Cas_Ok    : Boolean;
+   begin
+      loop
+         Cur  := Tf.Shared_Memory_Budget;
+         Next := (if Cur >= Bytes then Cur - Bytes else 0);
+         Aura.Hal.Atomic_Compare_Exchange_U64
+           (Tf.Shared_Memory_Budget'Address, Cur, Next, Cas_Ok);
+         if Cas_Ok then
+            return Next = 0;
+         end if;
+      end loop;
+   end Task_Force_Decrement_Memory;
+
+   function Task_Force_Decrement_Io
+     (Tf : in out Task_Force; Operations : Interfaces.Unsigned_64) return Boolean
+   is
+      Cur, Next : Interfaces.Unsigned_64;
+      Cas_Ok    : Boolean;
+   begin
+      loop
+         Cur  := Tf.Shared_Io_Budget;
+         Next := (if Cur >= Operations then Cur - Operations else 0);
+         Aura.Hal.Atomic_Compare_Exchange_U64
+           (Tf.Shared_Io_Budget'Address, Cur, Next, Cas_Ok);
+         if Cas_Ok then
+            return Next = 0;
+         end if;
+      end loop;
+   end Task_Force_Decrement_Io;
+
 end Aura.Channel;

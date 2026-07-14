@@ -476,6 +476,26 @@ procedure Aura_Selftest is
       Check ("channel: Task_Force Shared_Memory_Budget correctly stored", Tf.Shared_Memory_Budget = 9999);
       Check ("channel: Task_Force Shared_Io_Budget correctly stored", Tf.Shared_Io_Budget = 8888);
 
+      -- Test Decrement Memory
+      declare
+         Exhausted : Boolean;
+      begin
+         Exhausted := Task_Force_Decrement_Memory (Tf, 5000);
+         Check ("channel: Task_Force Shared_Memory_Budget decremented correctly", Tf.Shared_Memory_Budget = 4999 and not Exhausted);
+         Exhausted := Task_Force_Decrement_Memory (Tf, 5000);
+         Check ("channel: Task_Force Shared_Memory_Budget saturated/exhausted correctly", Tf.Shared_Memory_Budget = 0 and Exhausted);
+      end;
+
+      -- Test Decrement IO
+      declare
+         Exhausted : Boolean;
+      begin
+         Exhausted := Task_Force_Decrement_Io (Tf, 4000);
+         Check ("channel: Task_Force Shared_Io_Budget decremented correctly", Tf.Shared_Io_Budget = 4888 and not Exhausted);
+         Exhausted := Task_Force_Decrement_Io (Tf, 5000);
+         Check ("channel: Task_Force Shared_Io_Budget saturated/exhausted correctly", Tf.Shared_Io_Budget = 0 and Exhausted);
+      end;
+
       -- 3
       Contract.Associated_Watchdog := System.Null_Address;
       Check ("reincarnation: Associated_Watchdog correctly initialized", Contract.Associated_Watchdog = System.Null_Address);

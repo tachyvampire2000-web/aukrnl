@@ -166,4 +166,14 @@ package Aura.Channel is
    function Task_Force_Decrement_Budget
      (Tf : in out Task_Force; Ticks : Interfaces.Unsigned_64) return Boolean;
 
+   --  Атомарно списать Bytes из общего бюджета памяти (с насыщением в 0);
+   --  True, если бюджет исчерпан.
+   function Task_Force_Decrement_Memory
+     (Tf : in out Task_Force; Bytes : Interfaces.Unsigned_64) return Boolean;
+
+   --  Атомарно списать Operations из общего IO бюджета (с насыщением в 0);
+   --  True, если бюджет исчерпан.
+   function Task_Force_Decrement_Io
+     (Tf : in out Task_Force; Operations : Interfaces.Unsigned_64) return Boolean;
+
 end Aura.Channel;
