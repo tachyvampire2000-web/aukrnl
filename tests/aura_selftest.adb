@@ -346,10 +346,14 @@ procedure Aura_Selftest is
    begin
       T1.State := Ready;
       T1.Active_Sched_Ctx := T1.Own_Sched_Ctx'Unchecked_Access;
+      T1.Own_Sched_Ctx.Budget_Us := 10000;
+      T1.Own_Sched_Ctx.Remaining_Us := 10000;
       T1.Own_Sched_Ctx.Deadline_Tick := 20;
 
       T2.State := Ready;
       T2.Active_Sched_Ctx := T2.Own_Sched_Ctx'Unchecked_Access;
+      T2.Own_Sched_Ctx.Budget_Us := 10000;
+      T2.Own_Sched_Ctx.Remaining_Us := 10000;
       T2.Own_Sched_Ctx.Deadline_Tick := 10;
 
       Sched_Add_Thread (0, T1'Unchecked_Access);
@@ -366,6 +370,56 @@ procedure Aura_Selftest is
       Check ("sched: EDF scheduler adapts and selects T1 after deadline change",
              Current_Thread = T1'Unchecked_Access);
    end Test_EDF_Scheduling;
+
+   procedure Test_CBS_Scheduling is
+      use Aura.Thread;
+      use Aura.Sched;
+      use type Aura.Thread.Thread_Access;
+      use type Interfaces.Unsigned_64;
+
+      T_Cbs : aliased Thread;
+   begin
+      -- Set up a task with a limited budget and period
+      T_Cbs.State := Ready;
+      T_Cbs.Active_Sched_Ctx := T_Cbs.Own_Sched_Ctx'Unchecked_Access;
+      T_Cbs.Own_Sched_Ctx.Budget_Us := 2000;      -- 2 ticks
+      T_Cbs.Own_Sched_Ctx.Period_Us := 10000;     -- 10 ticks
+      T_Cbs.Own_Sched_Ctx.Remaining_Us := 2000;
+      T_Cbs.Own_Sched_Ctx.Deadline_Tick := 10;
+
+      -- Clear ready queue for Cpu 0 to avoid leftovers
+      Run_Queues (0).Ready_Count := 0;
+      Run_Queues (0).Current := T_Cbs'Unchecked_Access;
+      Sched_Add_Thread (0, T_Cbs'Unchecked_Access);
+
+      -- Tick 1: decrement Remaining_Us
+      declare
+         Dec : Scheduler_Decision;
+      begin
+         Dec := Run_Queues (0).Scheduler_Tick (Now => 1);
+         Check ("sched: CBS decrements Remaining_Us correctly on tick 1",
+                T_Cbs.Own_Sched_Ctx.Remaining_Us = 1000 and Dec /= Preempt);
+      end;
+
+      -- Tick 2: decrement Remaining_Us to 0. Since Now = 2 < Deadline_Tick (10), it should preempt/throttle!
+      declare
+         Dec : Scheduler_Decision;
+      begin
+         Dec := Run_Queues (0).Scheduler_Tick (Now => 2);
+         Check ("sched: CBS exhausts budget and preemption occurs",
+                T_Cbs.Own_Sched_Ctx.Remaining_Us = 0 and Dec = Preempt);
+      end;
+
+      -- Try to Schedule at Now = 3. Since budget is exhausted and Now (3) < Deadline_Tick (10), the thread is throttled and scheduler falls back to Boot_Thread!
+      Schedule (0, Now => 3);
+      Check ("sched: CBS throttles exhausted thread and falls back to boot thread",
+             Current_Thread /= T_Cbs'Unchecked_Access);
+
+      -- At Now = 10 (Deadline_Tick reached), scheduling again should trigger CBS replenishment!
+      Schedule (0, Now => 10);
+      Check ("sched: CBS replenishes budget on demand when deadline is reached",
+             T_Cbs.Own_Sched_Ctx.Remaining_Us = 2000 and Current_Thread = T_Cbs'Unchecked_Access);
+   end Test_CBS_Scheduling;
 
    procedure Test_RCU_Epoch is
       use Aura.Rcu;
@@ -588,6 +642,7 @@ begin
    Test_Budget_Donation;
    Test_Deadline_Timers;
    Test_EDF_Scheduling;
+   Test_CBS_Scheduling;
    Test_RCU_Epoch;
    Test_Fault_Delegation;
    Test_NMI_Watchdog;
