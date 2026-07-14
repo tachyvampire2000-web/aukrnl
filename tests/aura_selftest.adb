@@ -24,6 +24,7 @@ with System;
 with Aura.Rcu;
 with Aura.Fault;
 with Aura.Watchdog;
+with Aura.Io_Ring;
 with Aura.Channel;
 with Aura.Reincarnation;
 
@@ -497,6 +498,47 @@ procedure Aura_Selftest is
              C_Child2.Restart_Count = 1 and C_Head.Restart_Count = 0 and C_Child1.Restart_Count = 0);
    end Test_Group_Reincarnation;
 
+   procedure Test_Io_Batch_And_Template is
+      use Aura.Io_Ring;
+      Ring : Io_Ring;
+      St_Ok, St_Fail : Io_Batch_Result;
+   begin
+      -- 1. Successful Batch Submit
+      declare
+         Sqes : Io_Ring_Sqe_Array (1 .. 2);
+      begin
+         Sqes (1) := (Op_Code => Read, Cap_Index => 1);
+         Sqes (2) := (Op_Code => Write, Cap_Index => 2);
+         St_Ok := Io_Batch_Submit (Ring, Sqes);
+         Check ("io_ring: batch submit with valid SQEs succeeds",
+                St_Ok.Failed_At = 0 and St_Ok.Step_Results (1).Status = Ok and St_Ok.Step_Results (2).Status = Ok);
+      end;
+
+      -- 2. Failing Batch Submit (Transactional Rollback verification!)
+      declare
+         Sqes : Io_Ring_Sqe_Array (1 .. 2);
+      begin
+         Sqes (1) := (Op_Code => Read, Cap_Index => 1);
+         Sqes (2) := (Op_Code => Write, Cap_Index => 0); -- Cap_Index 0 triggers Bad_Cap
+         St_Fail := Io_Batch_Submit (Ring, Sqes);
+         Check ("io_ring: batch submit with failing step rolls back transaction",
+                St_Fail.Failed_At = 2 and St_Fail.Step_Results (2).Status = Bad_Cap);
+      end;
+
+      -- 3. Template Execution
+      declare
+         Template_Res : Io_Batch_Result;
+      begin
+         Template_Res := Io_Template_Execute (Ring, Read_Then_Write);
+         Check ("io_ring: template Read_Then_Write executes successfully",
+                Template_Res.Failed_At = 0 and Template_Res.Step_Results (1).Status = Ok);
+
+         Template_Res := Io_Template_Execute (Ring, Map_Then_Set_Attr);
+         Check ("io_ring: template Map_Then_Set_Attr executes successfully",
+                Template_Res.Failed_At = 0 and Template_Res.Step_Results (1).Status = Ok);
+      end;
+   end Test_Io_Batch_And_Template;
+
    procedure Test_RCU_Epoch is
       use Aura.Rcu;
       Cb : Rcu_Callback := (Kind => Drop_Object, Object_Ref => System.Null_Address);
@@ -785,6 +827,7 @@ begin
    Test_CBS_Scheduling;
    Test_EBR_Reclamation;
    Test_Group_Reincarnation;
+   Test_Io_Batch_And_Template;
    Test_RCU_Epoch;
    Test_Fault_Delegation;
    Test_NMI_Watchdog;
