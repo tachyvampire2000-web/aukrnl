@@ -459,17 +459,32 @@ procedure Aura_Selftest is
 
    procedure Test_Group_Reincarnation is
       use Aura.Reincarnation;
+      use Aura.Watchdog;
+      use Aura.Thread;
       use type Interfaces.Unsigned_32;
+      use type Interfaces.Unsigned_64;
+      use type System.Address;
+
       C_Head   : aliased Reincarnation_Contract;
       C_Child1 : aliased Reincarnation_Contract;
       C_Child2 : aliased Reincarnation_Contract;
+
+      Th_Child1 : aliased Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+      Wd_Child1 : aliased Watchdog := (Header => <>, Watched => Downgrade (Th_Child1'Unchecked_Access), Period => 5, Notify_Ref => (Target => null, Expected_Epoch => 0), Policy => Notify, Contract => Empty_Weak_Ref);
+      Reg       : Watchdog_Vector;
    begin
+      -- Register Watchdog
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Append (Reg, Wd_Child1'Unchecked_Access);
+      Watchdogs.Unlock (Reg);
+
       -- Set up head
       C_Head.Restart_Strategy_Field := One_For_All;
       C_Head.Group_Head := (Present => False); -- Head has no head
       C_Head.Next_In_Group := C_Child1'Unchecked_Access;
       C_Head.Sibling_Order := 0;
       C_Head.Restart_Count := 0;
+      C_Head.Associated_Watchdog := System.Null_Address;
 
       -- Set up child 1
       C_Child1.Restart_Strategy_Field := Rest_For_One;
@@ -477,6 +492,7 @@ procedure Aura_Selftest is
       C_Child1.Next_In_Group := C_Child2'Unchecked_Access;
       C_Child1.Sibling_Order := 1;
       C_Child1.Restart_Count := 0;
+      C_Child1.Associated_Watchdog := Wd_Child1'Address;
 
       -- Set up child 2
       C_Child2.Restart_Strategy_Field := One_For_One;
@@ -484,11 +500,15 @@ procedure Aura_Selftest is
       C_Child2.Next_In_Group := null;
       C_Child2.Sibling_Order := 2;
       C_Child2.Restart_Count := 0;
+      C_Child2.Associated_Watchdog := System.Null_Address;
 
-      -- Test 1: One_For_All on C_Head should restart C_Child1 and C_Child2
+      -- Test 1: One_For_All on C_Head should restart C_Child1 and C_Child2, resetting the associated Watchdog
+      Th_Child1.Last_Syscall_Tick := 0;
       Apply_Restart_Strategy (C_Head, Forced => False);
       Check ("reincarnation: One_For_All restarts all children in group",
              C_Child1.Restart_Count = 1 and C_Child2.Restart_Count = 1);
+      Check ("watchdog: Associated watchdog of child 1 was successfully reset during group restart",
+             Th_Child1.Last_Syscall_Tick /= 0);
 
       -- Reset counts
       C_Child1.Restart_Count := 0;

@@ -1,9 +1,13 @@
 --  AURA Kernel — Reincarnation Contracts implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Aura.Watchdog;
+with System;
+
 package body Aura.Reincarnation is
 
    use type Interfaces.Unsigned_32;
+   use type System.Address;
 
    procedure Kill_Process (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref) is
       pragma Unreferenced (Proc, Respawn_Cap);
@@ -52,6 +56,10 @@ package body Aura.Reincarnation is
          Curr.Supervised := New_Ctx;
          Curr.Restart_Count := Curr.Restart_Count + 1;
          Curr.Last_Heartbeat_Tick := Now;
+
+         if Curr.Associated_Watchdog /= System.Null_Address then
+            Aura.Watchdog.Reset_Watchdog_Heartbeat (Curr.Associated_Watchdog);
+         end if;
       end if;
    end Restart_Single_Contract;
 
