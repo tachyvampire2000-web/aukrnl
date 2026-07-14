@@ -60,4 +60,10 @@ package Aura.Cap_Node is
 
    procedure Free (Node : Cap_Node_Access);
 
+   --  Epoch-based Reclamation (EBR)
+   procedure Enter_Critical_Section (Cpu : Natural);
+   procedure Leave_Critical_Section (Cpu : Natural);
+   procedure Advance_Epoch_And_Reclaim;
+   procedure Retire (Node : Cap_Node_Access);
+
 end Aura.Cap_Node;

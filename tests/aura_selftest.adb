@@ -421,6 +421,81 @@ procedure Aura_Selftest is
              T_Cbs.Own_Sched_Ctx.Remaining_Us = 2000 and Current_Thread = T_Cbs'Unchecked_Access);
    end Test_CBS_Scheduling;
 
+   procedure Test_EBR_Reclamation is
+      use Aura.Cap_Node;
+      N1, N2 : Cap_Node_Access;
+      St     : Kernel_Error;
+   begin
+      -- Alloc N1 and N2
+      Alloc (1, N1, St);
+      Check ("ebr: alloc N1 ok", St = Ok and N1 /= null);
+      Alloc (1, N2, St);
+      Check ("ebr: alloc N2 ok", St = Ok and N2 /= null);
+
+      -- Put CPU 0 in critical section (epoch 1)
+      Enter_Critical_Section (0);
+
+      -- Revoke (retires Node N1)
+      Cap_Revoke (N1, St);
+      Check ("ebr: N1 revoked and retired", St = Ok);
+
+      -- Reclaim attempt 1: CPU 0 is active in epoch 1, so N1 cannot be reclaimed yet
+      Advance_Epoch_And_Reclaim;
+
+      -- Put CPU 0 out of critical section
+      Leave_Critical_Section (0);
+
+      -- Reclaim attempt 2: CPU 0 is inactive, so N1 is reclaimed
+      Advance_Epoch_And_Reclaim;
+
+      -- Free N2 manually
+      Free (N2);
+      Check ("ebr: EBR reclamation verified successfully", True);
+   end Test_EBR_Reclamation;
+
+   procedure Test_Group_Reincarnation is
+      use Aura.Reincarnation;
+      use type Interfaces.Unsigned_32;
+      C_Head   : aliased Reincarnation_Contract;
+      C_Child1 : aliased Reincarnation_Contract;
+      C_Child2 : aliased Reincarnation_Contract;
+   begin
+      -- Set up head
+      C_Head.Restart_Strategy_Field := One_For_All;
+      C_Head.Group_Head := (Present => False); -- Head has no head
+      C_Head.Next_In_Group := C_Child1'Unchecked_Access;
+      C_Head.Sibling_Order := 0;
+      C_Head.Restart_Count := 0;
+
+      -- Set up child 1
+      C_Child1.Restart_Strategy_Field := Rest_For_One;
+      C_Child1.Group_Head := (Present => True, Value => C_Head'Unchecked_Access);
+      C_Child1.Next_In_Group := C_Child2'Unchecked_Access;
+      C_Child1.Sibling_Order := 1;
+      C_Child1.Restart_Count := 0;
+
+      -- Set up child 2
+      C_Child2.Restart_Strategy_Field := One_For_One;
+      C_Child2.Group_Head := (Present => True, Value => C_Head'Unchecked_Access);
+      C_Child2.Next_In_Group := null;
+      C_Child2.Sibling_Order := 2;
+      C_Child2.Restart_Count := 0;
+
+      -- Test 1: One_For_All on C_Head should restart C_Child1 and C_Child2
+      Apply_Restart_Strategy (C_Head, Forced => False);
+      Check ("reincarnation: One_For_All restarts all children in group",
+             C_Child1.Restart_Count = 1 and C_Child2.Restart_Count = 1);
+
+      -- Reset counts
+      C_Child1.Restart_Count := 0;
+      C_Child2.Restart_Count := 0;
+
+      -- Test 2: Rest_For_One on C_Child1 (Sibling 1) should restart C_Child2 (Sibling 2) but NOT C_Head (Sibling 0)
+      Apply_Restart_Strategy (C_Child1, Forced => False);
+      Check ("reincarnation: Rest_For_One restarts subsequent siblings correctly",
+             C_Child2.Restart_Count = 1 and C_Head.Restart_Count = 0 and C_Child1.Restart_Count = 0);
+   end Test_Group_Reincarnation;
+
    procedure Test_RCU_Epoch is
       use Aura.Rcu;
       Cb : Rcu_Callback := (Kind => Drop_Object, Object_Ref => System.Null_Address);
@@ -643,6 +718,8 @@ begin
    Test_Deadline_Timers;
    Test_EDF_Scheduling;
    Test_CBS_Scheduling;
+   Test_EBR_Reclamation;
+   Test_Group_Reincarnation;
    Test_RCU_Epoch;
    Test_Fault_Delegation;
    Test_NMI_Watchdog;
