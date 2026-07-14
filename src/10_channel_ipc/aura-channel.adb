@@ -219,6 +219,7 @@ package body Aura.Channel is
       Deadline      : Interfaces.Unsigned_64;
       Check_Status  : Kernel_Error;
    begin
+      Index := 0;
       if Wait_Any_Source_Vectors.Length (Sources) = 0
         or else Wait_Any_Source_Vectors.Length (Sources) > Wait_Any_Max
       then

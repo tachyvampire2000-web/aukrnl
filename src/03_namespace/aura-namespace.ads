@@ -51,10 +51,10 @@ package Aura.Namespace is
    --  (продолжение из источника, doc-lines 2015-2062, после
    --  первоначального закрытия Aura.Namespace — см. MANIFEST §Находки)
    type Layer_Kind is (System, User, Mount, Container, Service);
-   --  System (C): PUnion нескольких пакетов (Haiku-стиль, без приоритета).
+   --  System (C): P_Union нескольких пакетов (Haiku-стиль, без приоритета).
    --  User (D): обычная директория в Re, без union.
    --  Mount (E): прямой доступ к физическому/блочному устройству.
-   --  Container (F): PUnion образа контейнера (Haiku-стиль).
+   --  Container (F): P_Union образа контейнера (Haiku-стиль).
    --  Service (G): runtime-пространство демона (обычная директория).
 
    function Letter (Kind : Layer_Kind) return Character is
@@ -71,7 +71,7 @@ package Aura.Namespace is
                                  Plain_Directory_Backend);
 
    --  Ada discriminated record — эквивалент Rust enum с данными
-   --  (Package(PUnion) | RawDevice(Arc<DeviceObject>) | PlainDirectory(...)).
+   --  (Package(P_Union) | RawDevice(Arc<DeviceObject>) | PlainDirectory(...)).
    type Layer_Backend (Kind : Layer_Backend_Kind := Plain_Directory_Backend) is
      record
         case Kind is
