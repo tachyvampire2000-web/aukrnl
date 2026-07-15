@@ -6,8 +6,6 @@ with Ada.Unchecked_Deallocation;
 
 package body Aura.Rcu is
 
-   use type Interfaces.Unsigned_64;
-
    procedure Execute (Cb : Rcu_Callback) is
       procedure Free_Layer is new Ada.Unchecked_Deallocation (Integer, Layer_Access);
       procedure Free_Attr_Entry is new Ada.Unchecked_Deallocation (Integer, Attr_Entry_Access);
