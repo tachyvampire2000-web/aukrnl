@@ -77,6 +77,11 @@ package body Aura.Cap_Node is
          return;
       end if;
 
+      if Root.Revoke_In_Progress then
+         Status := Ok;
+         return;
+      end if;
+
       Node_Vectors.Append (Stack, Root);
 
       while not Node_Vectors.Is_Empty (Stack) loop

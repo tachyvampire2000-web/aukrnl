@@ -30,7 +30,9 @@ package Aura.Fault is
       Object : Fault_Endpoint_Access;
    end record;
 
-   type Thread_Manage_Ref is access all Integer; -- Placeholder
+   type Thread_Manage_Ref is record
+      Object : Aura.Thread.Thread_Access;
+   end record;
 
    type Phys_Addr_Option (Present : Boolean := False) is record
       case Present is

@@ -1,24 +1,40 @@
---  AURA — RCU Subsystem implementation (fully functional grace period & RCU deref/assign)
+--  AURA Kernel — Synchronization: Read-Copy Update (RCU) implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Ada.Unchecked_Conversion;
+with Ada.Unchecked_Deallocation;
 
 package body Aura.Rcu is
 
    use type Interfaces.Unsigned_64;
 
    procedure Execute (Cb : Rcu_Callback) is
+      procedure Free_Layer is new Ada.Unchecked_Deallocation (Integer, Layer_Access);
+      procedure Free_Attr_Entry is new Ada.Unchecked_Deallocation (Integer, Attr_Entry_Access);
+      procedure Free_Ns_Node is new Ada.Unchecked_Deallocation (Integer, Namespace_Node_Access);
    begin
       --  RCU callback dispatch based on the Kind
       case Cb.Kind is
          when Drop_Object =>
-            null;
+            null; -- raw address tracing / no-op
          when Drop_Layer =>
-            null;
+            declare
+               L_Ref : Layer_Access := Cb.Layer_Ref;
+            begin
+               Free_Layer (L_Ref);
+            end;
          when Drop_Attr_Entry =>
-            null;
+            declare
+               A_Ref : Attr_Entry_Access := Cb.Attr_Ref;
+            begin
+               Free_Attr_Entry (A_Ref);
+            end;
          when Drop_Namespace_Node =>
-            null;
+            declare
+               N_Ref : Namespace_Node_Access := Cb.Ns_Node_Ref;
+            begin
+               Free_Ns_Node (N_Ref);
+            end;
       end case;
    end Execute;
 
@@ -82,8 +98,19 @@ package body Aura.Rcu is
       procedure Call_Rcu (Cb : Rcu_Callback; Status : out Kernel_Error) is
          Idx : constant Natural := Natural (Global_Gen mod 2);
       begin
-         Pending_Queues (Idx).Push (Cb, Status);
+         if Active_Readers = 0 then
+            -- Immediate execution if no active readers are currently reading
+            Execute (Cb);
+            Status := Ok;
+         else
+            Pending_Queues (Idx).Push (Cb, Status);
+         end if;
       end Call_Rcu;
+
+      function Readers_Count return Interfaces.Unsigned_64 is
+      begin
+         return Active_Readers;
+      end Readers_Count;
 
    end Rcu_Domain;
 

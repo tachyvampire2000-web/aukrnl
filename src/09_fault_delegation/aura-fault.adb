@@ -3,10 +3,16 @@
 
 with System;
 with Ada.Unchecked_Conversion;
+with Aura.Hal;
+with Aura.Sched;
+with Aura.Vspace;
 
 package body Aura.Fault is
 
    use type System.Address;
+   use type Aura.Thread.Thread_Access;
+   use type Aura.Thread.V_Space_Ref;
+   use type Aura.Vspace.V_Space_Ref;
 
    function Check_Valid (C : Fault_Endpoint_Write_Ref) return Kernel_Error is
    begin
@@ -17,17 +23,29 @@ package body Aura.Fault is
       end if;
    end Check_Valid;
 
-   function Check_Valid (C : Thread_Manage_Ref) return Kernel_Error is (Ok);
+   function Check_Valid (C : Thread_Manage_Ref) return Kernel_Error is
+   begin
+      if C.Object = null then
+         return Bad_Cap;
+      else
+         return Ok;
+      end if;
+   end Check_Valid;
+
    function Downgrade (C : Integer) return Xpc_Endpoint_Weak_Ref is (null);
 
    procedure Plat_Map_Segment
      (Root : Interfaces.Unsigned_64; Va, Pa, Size : Interfaces.Unsigned_64;
       Flags : Interfaces.Unsigned_32; Status : out Kernel_Error) is
    begin
-      Status := Ok;
+      Aura.Hal.Hal_Iommu_Map (Root, Va, Pa, Size, Flags, Status);
    end Plat_Map_Segment;
 
-   procedure Sched_Resume (Th : in out Thread) is begin null; end;
+   procedure Sched_Resume (Th : in out Thread) is
+   begin
+      Th.State := Aura.Thread.Ready;
+      Aura.Sched.Sched_Add_Thread (0, Th'Unrestricted_Access);
+   end Sched_Resume;
 
    procedure Thread_Set_Fault_Handler
      (Th       : in out Thread;
@@ -42,6 +60,9 @@ package body Aura.Fault is
       Th.Fault_Endpoint := Endpoint.Object.all'Address;
       Status := Ok;
    end Thread_Set_Fault_Handler;
+
+   function To_Real_Vspace_Ref is new Ada.Unchecked_Conversion
+     (Aura.Thread.V_Space_Ref, Aura.Vspace.V_Space_Ref);
 
    procedure Thread_Resume
      (Thread_Cap : Thread_Manage_Ref;
@@ -58,6 +79,17 @@ package body Aura.Fault is
          return;
       end if;
 
+      if Thread_Cap.Object.Exec_Ctx.Bound_Vspace /= null then
+         declare
+            Real_Vspace : constant Aura.Vspace.V_Space_Ref :=
+              To_Real_Vspace_Ref (Thread_Cap.Object.Exec_Ctx.Bound_Vspace);
+         begin
+            if Real_Vspace /= null then
+               Vspace_Root := Real_Vspace.Page_Table_Root;
+            end if;
+         end;
+      end if;
+
       if Map_Phys.Present then
          --  Платформенный вызов — граница платформы, идентичная
          --  unsafe-блоку Rust-версии.
@@ -70,7 +102,7 @@ package body Aura.Fault is
          end if;
       end if;
 
-      --  Sched_Resume (Th); Placeholder
+      Sched_Resume (Thread_Cap.Object.all);
       Status := Ok;
    end Thread_Resume;
 

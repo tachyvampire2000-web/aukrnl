@@ -1,11 +1,13 @@
+--  AURA Kernel — Common Instances specification
+--  SPDX-License-Identifier: GPL-2.0-only
+
 with Aura.Option;
-with Aura.Capability;
+with Aura.Thread_Capability;
+with Aura.Capability.Validity;
 with Aura.Weak_Ref;
-with Aura.Slot_Map;
-with Aura.Flip_Cell;
-with Aura.Ticket_Lock;
 with Aura.Thread;
-with Aura.Object; use Aura.Object;
+with Aura.Ticket_Lock;
+with Aura.Per_Cpu;
 with Interfaces;
 with Ada.Containers.Bounded_Vectors;
 
@@ -27,8 +29,10 @@ package Aura.Instances is
      (T : Full_Thread) return Interfaces.Unsigned_32
    is (T.Header.Epoch);
 
-   package Thread_Capability is
-     new Aura.Capability (Full_Thread, Thread_Epoch);
-   package Thread_Weak_Ref_Base is new Aura.Weak_Ref (Full_Thread, Aura.Thread.Thread_Access);
+   package Thread_Capability renames Aura.Thread_Capability;
+   package Thread_Weak_Ref_Base is new Aura.Weak_Ref (Full_Thread, Aura.Thread.Thread_Access, Thread_Epoch);
+
+   package Thread_Capability_Validity is new Aura.Thread_Capability.Validity;
+   package Cpu_Data is new Aura.Per_Cpu (Integer, 4);
 
 end Aura.Instances;

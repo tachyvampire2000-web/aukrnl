@@ -1,24 +1,81 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — Secure Resource Bindings implementation
+--  SPDX-License-Identifier: GPL-2.0-only
+
+with Aura.Hal;
+with Aura.Vspace;
+with Aura.Ring;
 
 package body Aura.Secure_Binding is
 
-   type V_Space_Ref is access all Integer; -- Placeholder
+   use type Aura.Vspace.V_Space_Ref;
 
-   procedure Upgrade (W : Process_Context_Weak_Ref; R : out Process_Context_Ref; A : out Boolean) is begin R := null; A := False; end;
-   procedure Upgrade (W : Integer; R : out V_Space_Ref; A : out Boolean) is begin R := null; A := False; end;
-   procedure Vspace_Unmap (V : V_Space_Ref; Va, S : Interfaces.Unsigned_64; St : out Kernel_Error) is begin St := Ok; end;
+   procedure Upgrade (W : Process_Context_Weak_Ref; R : out Process_Context_Ref; A : out Boolean) is
+   begin
+      R := Process_Context_Ref (W);
+      A := W /= null;
+   end Upgrade;
+
+   procedure Vspace_Unmap (V : Aura.Vspace.V_Space_Ref; Va, S : Interfaces.Unsigned_64; St : out Kernel_Error) is
+   begin
+      if V = null then
+         St := Bad_Cap;
+      else
+         Aura.Hal.Hal_Unmap_Segment (V.Page_Table_Root, Va, S, St);
+      end if;
+   end Vspace_Unmap;
+
    function Check_Valid (C : Prm_Resource_Set_Cap) return Kernel_Error is (Ok);
-   procedure Map_Resource_Into_Vspace (V : V_Space_Ref; R : Secure_Binding_Resource; H : Interfaces.Unsigned_64; Va : out Interfaces.Unsigned_64; St : out Kernel_Error) is begin Va := 0; St := Ok; end;
-   procedure Construct_Secure_Binding (Header : Integer; Resource : Secure_Binding_Resource; Owner : Process_Context_Ref; Kernel_Tlb : Interfaces.Unsigned_64; Result : out Secure_Binding_Manage_Ref) is begin Result := null; end;
+
+   procedure Map_Resource_Into_Vspace
+     (V : Aura.Vspace.V_Space_Ref; R : Secure_Binding_Resource; H : Interfaces.Unsigned_64;
+      Va : out Interfaces.Unsigned_64; St : out Kernel_Error) is
+   begin
+      if V = null then
+         Va := 0;
+         St := Bad_Cap;
+      else
+         Va := (if H /= 0 then H else 16#1000_0000#);
+         -- Map MMIO, DMA or Ports
+         declare
+            Phys : Interfaces.Unsigned_64;
+            Size : Interfaces.Unsigned_64;
+         begin
+            case R.Kind is
+               when Mmio_Region =>
+                  Phys := R.Mmio_Phys_Base;
+                  Size := R.Mmio_Size;
+               when Dma_Buffer =>
+                  Phys := R.Dma_Phys_Base;
+                  Size := R.Dma_Size;
+               when Port_Io =>
+                  Phys := Interfaces.Unsigned_64 (R.Base_Port);
+                  Size := Interfaces.Unsigned_64 (R.Count);
+            end case;
+            Aura.Hal.Hal_Iommu_Map (V.Page_Table_Root, Va, Phys, Size, 0, St);
+         end;
+      end if;
+   end Map_Resource_Into_Vspace;
+
+   procedure Construct_Secure_Binding
+     (Header     : Object_Header;
+      Resource   : Secure_Binding_Resource;
+      Owner      : Process_Context_Ref;
+      Kernel_Tlb : Interfaces.Unsigned_64;
+      Result     : out Secure_Binding_Manage_Ref) is
+      pragma Unreferenced (Header);
+   begin
+      Result := (Object => new Secure_Binding'
+        (Header     => (Epoch => 1, Min_Ring => Aura.Ring.Ring3, Rcu_Domain => null),
+         Resource   => Resource,
+         Owner      => Process_Context_Weak_Ref (Owner),
+         Kernel_Tlb => Kernel_Tlb));
+   end Construct_Secure_Binding;
 
    procedure Resolve_External_Effect (Self : in out Secure_Binding) is
       Owner_Alive  : Boolean;
       Owner_Ctx    : Process_Context_Ref;
       Vspace_Alive : Boolean;
-      Vspace       : V_Space_Ref;
+      Vspace       : Aura.Vspace.V_Space_Ref;
       Va           : Interfaces.Unsigned_64;
       Size         : Interfaces.Unsigned_64;
    begin
@@ -26,7 +83,8 @@ package body Aura.Secure_Binding is
       if not Owner_Alive then
          return;
       end if;
-      Upgrade (0, Vspace, Vspace_Alive); -- Placeholder
+      Vspace := Owner_Ctx.Vspace;
+      Vspace_Alive := Vspace /= null;
       if not Vspace_Alive then
          return;
       end if;
@@ -60,14 +118,19 @@ package body Aura.Secure_Binding is
       Status   : out Kernel_Error)
    is
       Vspace_Alive : Boolean;
-      Vspace       : V_Space_Ref;
+      Vspace       : Aura.Vspace.V_Space_Ref;
       Va           : Interfaces.Unsigned_64;
    begin
       if Check_Valid (Prm_Cap) /= Ok then
          Status := Check_Valid (Prm_Cap);
          return;
       end if;
-      Upgrade (0, Vspace, Vspace_Alive); -- Placeholder
+      if Owner = null then
+         Status := Invalid_Argument;
+         return;
+      end if;
+      Vspace := Owner.Vspace;
+      Vspace_Alive := Vspace /= null;
       if not Vspace_Alive then
          Status := Host_Vspace_Destroyed;
          return;
@@ -77,7 +140,8 @@ package body Aura.Secure_Binding is
          return;
       end if;
       Construct_Secure_Binding
-        (Header => 0, Resource => Resource,
+        (Header => (Epoch => 1, Min_Ring => Aura.Ring.Ring3, Rcu_Domain => null),
+         Resource => Resource,
          Owner => Owner, Kernel_Tlb => Va, Result => Result);
       Status := Ok;
    end Secure_Binding_Create;

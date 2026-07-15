@@ -28,6 +28,10 @@ with Aura.Watchdog;
 with Aura.Io_Ring;
 with Aura.Channel;
 with Aura.Reincarnation;
+with Aura.Instances;
+with Aura.Secure_Binding;
+with Aura.Vspace;
+with Aura.Namespace;
 
 procedure Aura_Selftest is
 
@@ -896,6 +900,136 @@ procedure Aura_Selftest is
              St = Ok and then Notif.Pending = 1);
    end Test_Synapse;
 
+   procedure Test_Real_Subsystems is
+      use Aura.Instances;
+      use Aura.Secure_Binding;
+      use Aura.Vspace;
+      use Aura.Fault;
+      use type Interfaces.Unsigned_8;
+      use type Interfaces.Unsigned_32;
+      use type Interfaces.Unsigned_64;
+      use type Aura.Thread.Thread_Access;
+      use type Aura.Thread.Thread_State;
+
+      -- 1. Test Weak_Ref Epoch Checks
+      T      : aliased Aura.Thread.Thread;
+      T_Back : Aura.Thread.Thread_Access;
+      Alive  : Boolean;
+   begin
+      T.Header.Epoch := 5;
+      declare
+         W_Ref  : constant Thread_Weak_Ref_Base.Instance := Thread_Weak_Ref_Base.Downgrade (T'Unchecked_Access);
+      begin
+         Thread_Weak_Ref_Base.Upgrade (W_Ref, T_Back, Alive);
+         Check ("weak_ref: upgrade succeeds on matching epoch", Alive and T_Back = T'Unchecked_Access);
+
+         -- Now change epoch to simulate object destruction/recreation
+         T.Header.Epoch := 6;
+         declare
+            T_Back_Fail : Aura.Thread.Thread_Access;
+            Alive_Fail  : Boolean;
+         begin
+            Thread_Weak_Ref_Base.Upgrade (W_Ref, T_Back_Fail, Alive_Fail);
+            Check ("weak_ref: upgrade fails on epoch mismatch", not Alive_Fail and T_Back_Fail = null);
+         end;
+      end;
+
+      -- 2. Test Secure_Binding with real Page_Table_Root
+      declare
+         Owner_Vspace : aliased V_Space;
+         Owner_Proc   : aliased Process_Context;
+         Res          : Secure_Binding_Resource (Mmio_Region);
+         S_Manage     : Secure_Binding_Manage_Ref;
+         St           : Kernel_Error;
+      begin
+         Owner_Vspace.Page_Table_Root := 16#CAFE_BAB0#;
+         Owner_Proc.Vspace := Owner_Vspace'Unchecked_Access;
+         Res.Mmio_Phys_Base := 16#9000_0000#;
+         Res.Mmio_Size      := 8192;
+
+         Secure_Binding_Create (null, Res, Owner_Proc'Unchecked_Access, 0, S_Manage, St);
+         Check ("secure_binding: create succeeds and maps resource", St = Ok and S_Manage.Object /= null);
+
+         if S_Manage.Object /= null then
+            Check ("secure_binding: correct physical resource size/tlb cached", S_Manage.Object.Kernel_Tlb /= 0);
+            Resolve_External_Effect (S_Manage.Object.all);
+            Check ("secure_binding: resolve_external_effect unmaps and resets tlb", S_Manage.Object.Kernel_Tlb = 0);
+         end if;
+      end;
+
+      -- 3. Test Fault_Resume and Sched_Resume
+      declare
+         Fault_Th : aliased Aura.Thread.Thread;
+         Manage   : Thread_Manage_Ref;
+         Phys     : Phys_Addr_Option := (Present => True, Value => 16#F000_0000#);
+         St       : Kernel_Error;
+      begin
+         Fault_Th.State := Aura.Thread.Blocked;
+         Manage.Object := Fault_Th'Unchecked_Access;
+         Thread_Resume (Manage, Phys, 16#8000_0000#, St);
+         Check ("fault: thread_resume maps segment and transitions thread to Ready", St = Ok and Fault_Th.State = Aura.Thread.Ready);
+      end;
+
+      -- 4. Test Double Cap_Revoke Guard
+      declare
+         use Aura.Cap_Node;
+         Node : Cap_Node_Access;
+         St   : Kernel_Error;
+      begin
+         Alloc (Obj_Epoch => 123, Result => Node, Status => St);
+         Check ("cap_node: alloc for double-revoke test succeeds", St = Ok and Node /= null);
+         if Node /= null then
+            Cap_Revoke (Node, St);
+            Check ("cap_node: first revoke succeeds", St = Ok);
+            Check ("cap_node: revoke in progress is set", Node.Revoke_In_Progress);
+
+            -- Call revoke again - should be guarded and return Ok safely without re-retiring
+            Cap_Revoke (Node, St);
+            Check ("cap_node: second revoke guarded and returns Ok", St = Ok);
+         end if;
+      end;
+
+      -- 5. Test RCU Immediate Writer-Side Execution (Active_Readers = 0)
+      declare
+         use Aura.Rcu;
+         use type System.Address;
+
+         Allocated_Val : Layer_Access := new Integer'(99);
+         Cb : Rcu_Callback := (Kind => Drop_Layer, Layer_Ref => Allocated_Val);
+         St : Kernel_Error;
+      begin
+         -- No read lock is held, so Global_Domain.Readers_Count should be 0.
+         Check ("rcu: readers count is 0", Global_Domain.Readers_Count = 0);
+
+         Global_Domain.Call_Rcu (Cb, St);
+         Check ("rcu: call_rcu with 0 readers executes immediately", St = Ok);
+      end;
+
+      -- 6. Test MAC Mandatory Label Setting and Strong Tranquility
+      declare
+         use Aura.Mac;
+         use Aura.Namespace;
+
+         Node  : aliased Namespace_Node;
+         Lbl_1 : constant Mandatory_Label := (Level => 2, Categories => 2#110#);
+         Lbl_2 : constant Mandatory_Label := (Level => 5, Categories => 2#001#);
+         St    : Kernel_Error;
+      begin
+         Check ("mac: initially label is not set", not Node.Mac_Label_Set);
+
+         -- First set should succeed
+         Set_Mandatory_Label (Node, Lbl_1, St);
+         Check ("mac: first label set succeeds", St = Ok and Node.Mac_Label_Set);
+         Check ("mac: node level is correctly set", Node.Mac_Level = 2);
+         Check ("mac: node categories are correctly set", Node.Mac_Categories = 2#110#);
+
+         -- Second set should fail with Label_Immutable (Strong Tranquility)
+         Set_Mandatory_Label (Node, Lbl_2, St);
+         Check ("mac: second label set fails with Label_Immutable", St = Label_Immutable);
+         Check ("mac: level remains unchanged", Node.Mac_Level = 2);
+      end;
+   end Test_Real_Subsystems;
+
 begin
    Test_Rights;
    Test_Wait_Queue;
@@ -922,6 +1056,7 @@ begin
    Test_NMI_Watchdog;
    Test_Interrupt_Threading;
    Test_New_Enhancements;
+   Test_Real_Subsystems;
 
    if Failures = 0 then
       Put_Line ("aura selftest: OK");

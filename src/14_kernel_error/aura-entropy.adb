@@ -1,19 +1,11 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — Entropy budget implementation
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with System;
+with Aura.Hal;
 
 package body Aura.Entropy is
-
-   procedure Atomic_Compare_Exchange_U64
-     (Addr : System.Address; Expected : Interfaces.Unsigned_64;
-      Desired : Interfaces.Unsigned_64; Success : out Boolean) is
-   begin
-      --  Placeholder
-      Success := True;
-   end Atomic_Compare_Exchange_U64;
 
    function Check_Valid (Cap : Object_Bind_Prm_Ref) return Kernel_Error is (Ok);
 
@@ -29,7 +21,7 @@ package body Aura.Entropy is
             Status := Entropy_Exhausted;
             return;
          end if;
-         Atomic_Compare_Exchange_U64
+         Aura.Hal.Atomic_Compare_Exchange_U64
            (Entropy_Budget'Address, Cur, Cur - Bytes, Cas_Ok);
          if Cas_Ok then
             Status := Ok;
@@ -46,7 +38,7 @@ package body Aura.Entropy is
          Cur  := Entropy_Budget;
          Next := Interfaces.Unsigned_64'Min
            (Saturating_Add_U64 (Cur, Bytes), Entropy_Budget_Max);
-         Atomic_Compare_Exchange_U64
+         Aura.Hal.Atomic_Compare_Exchange_U64
            (Entropy_Budget'Address, Cur, Next, Cas_Ok);
          if Cas_Ok then
             return;
