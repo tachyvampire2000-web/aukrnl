@@ -6,6 +6,8 @@
 with Aura.Wait_Queue;
 with Aura.Timer;
 with Aura.Thread;
+with Ada.Unchecked_Conversion;
+with System;
 
 package body Aura.Synapse is
 
@@ -67,6 +69,10 @@ package body Aura.Synapse is
    end Erased_Cap_Check_Valid;
 
    function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error is
+      use type System.Address;
+      type Object_Header_Access is access all Object_Header;
+      function To_Header is new Ada.Unchecked_Conversion (System.Address, Object_Header_Access);
+
       Check_Status : Kernel_Error;
       Len : constant Integer := Integer (Sealed_Cap_Vectors.Length (Call.Caps));
    begin
@@ -79,6 +85,15 @@ package body Aura.Synapse is
       end loop;
       case Call.Op.Kind is
          when Object_Destroy_Op =>
+            if Call.Op.Target_Obj_Addr /= System.Null_Address then
+               declare
+                  H : constant Object_Header_Access := To_Header (Call.Op.Target_Obj_Addr);
+               begin
+                  if H /= null then
+                     H.all.Epoch := H.all.Epoch + 1; -- Revoke all capabilities to this object!
+                  end if;
+               end;
+            end if;
             return Ok;
          when Watchdog_Policy_Override_Op =>
             return Ok;
@@ -166,7 +181,17 @@ package body Aura.Synapse is
       Depth       : Natural) return Kernel_Error
    is
       New_Charge : Interfaces.Integer_32;
+      Now        : constant Interfaces.Unsigned_64 := Current_Tick;
    begin
+      if Syn.Min_Interval_Ticks > 0 then
+         if Syn.Last_Signal_Tick /= 0 then
+            if Now - Syn.Last_Signal_Tick < Syn.Min_Interval_Ticks then
+               return Would_Block;
+            end if;
+         end if;
+         Syn.Last_Signal_Tick := Now;
+      end if;
+
       Apply_Decay_If_Due (Syn);
       New_Charge := Syn.Charge + Value_Delta;
 

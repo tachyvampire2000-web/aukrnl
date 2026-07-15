@@ -1,5 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива).
+--  AURA Kernel — aura-cap_object_ref_pkg.adb
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 package body Aura.Cap_Object_Ref_Pkg is
 

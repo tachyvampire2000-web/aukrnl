@@ -4,7 +4,6 @@
 
 with Aura.Object; use Aura.Object;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
-with Aura.Rights; use Aura.Rights;
 with Aura.Vspace;
 with Interfaces;
 

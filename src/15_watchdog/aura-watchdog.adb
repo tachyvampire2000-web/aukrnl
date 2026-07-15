@@ -1,5 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива).
+--  AURA Kernel — aura-watchdog.adb
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Sched;
 with Aura.Timer;

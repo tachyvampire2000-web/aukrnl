@@ -1,5 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива).
+--  AURA Kernel — aura-flip_cell.adb
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 package body Aura.Flip_Cell is
 

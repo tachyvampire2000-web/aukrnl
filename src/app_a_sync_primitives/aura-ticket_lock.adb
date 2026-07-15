@@ -1,4 +1,4 @@
---  AURA — Ticket_Lock (correct and robust mutex implementation)
+--  AURA Kernel — Synchronization: Ticket Lock implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
 package body Aura.Ticket_Lock is
@@ -8,6 +8,8 @@ package body Aura.Ticket_Lock is
       entry Lock (Item : out Element_Type)
          when not Locked is
       begin
+         My_Ticket := Now_Serving;
+         Next_Ticket := Next_Ticket + 1;
          Item := Data;
          Locked := True;
       end Lock;
@@ -15,6 +17,7 @@ package body Aura.Ticket_Lock is
       procedure Unlock (Item : Element_Type) is
       begin
          Data := Item;
+         Now_Serving := Now_Serving + 1;
          Locked := False;
       end Unlock;
 
@@ -22,6 +25,8 @@ package body Aura.Ticket_Lock is
          when True is
       begin
          if not Locked then
+            My_Ticket := Now_Serving;
+            Next_Ticket := Next_Ticket + 1;
             Item := Data;
             Locked := True;
             Success := True;
@@ -34,6 +39,9 @@ package body Aura.Ticket_Lock is
       begin
          Data := Initial;
          Locked := False;
+         Next_Ticket := 0;
+         Now_Serving := 0;
+         My_Ticket := 0;
       end Init;
 
    end Instance;

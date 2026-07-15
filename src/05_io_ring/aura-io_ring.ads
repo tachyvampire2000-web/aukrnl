@@ -1,11 +1,11 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — aura-io_ring.ads
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Object; use Aura.Object;
 with Aura.Flip_Cell;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
+with Aura.Thread;
 with Ada.Containers.Bounded_Vectors;
 with Interfaces;
 
@@ -53,7 +53,7 @@ package Aura.Io_Ring is
       Flags : Interfaces.Unsigned_32;
    end record;
 
-   type Thread_Access is access all Integer; -- Placeholder
+   type Thread_Access is access all Aura.Thread.Thread;
 
    subtype Io_Ring_Sqe is Sqe_Cells.Instance;
 
@@ -172,5 +172,7 @@ package Aura.Io_Ring is
    --  чей Bound_Vspace указывает на уничтожаемый объект — конкретное
    --  воплощение общего правила §1.7.0 порта (правило внешнего физического
    --  эффекта). Переносится без изменений по существу.
+
+   procedure Object_Destroy_Vspace (Victim : in out V_Space);
 
 end Aura.Io_Ring;

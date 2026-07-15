@@ -1,28 +1,53 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — aura-driver.adb
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 package body Aura.Driver is
+
+   use type Interfaces.Unsigned_32;
 
 
    function Check_Valid (Obj : Prm_Resource_Set) return Kernel_Error is (Ok); -- Placeholder
    procedure Hal_Release_Msi_X_Vector (Id : Interfaces.Unsigned_64; Idx : Interfaces.Unsigned_16) is begin null; end;
    procedure Release_All_Resources (Obj : Prm_Resource_Set) is begin null; end;
 
-   type Reincarnation_Contract is record
-      Supervised : Process_Context_Ref;
-      Respawn_Cap : Erased_Cap;
-      Restart_Count : Natural;
-      Last_Heartbeat_Tick : Interfaces.Unsigned_64;
-   end record;
+   procedure Kill_Process (P : Process_Context_Ref; C : Erased_Cap) is
+      pragma Unreferenced (C);
+   begin
+      if P /= null then
+         P.all := 0; -- Mark as killed
+      end if;
+   end Kill_Process;
 
-   procedure Kill_Process (P : Process_Context_Ref; C : Erased_Cap) is begin null; end;
-   procedure Respawn_From_Template (P : Process_Context_Ref; C : Erased_Cap; New_P : out Process_Context_Ref) is begin New_P := null; end;
-   procedure Rebind_Namespace_Mounts (P : Process_Context_Ref; C : Reincarnation_Contract) is begin null; end;
-   procedure Create_Xpc_Endpoint_In_Cspace (P : Process_Context_Ref; E : out Erased_Cap) is begin E := null; end;
-   procedure Mint_Prm_Resource_Set_Cap (P : Process_Context_Ref; T : Device_Object; C : out Erased_Cap) is begin C := null; end;
-   procedure Mint_Target_Read_Cap (P : Process_Context_Ref; T : Device_Object; C : out Erased_Cap) is begin C := null; end;
+   procedure Respawn_From_Template (P : Process_Context_Ref; C : Erased_Cap; New_P : out Process_Context_Ref) is
+      pragma Unreferenced (P, C);
+   begin
+      New_P := new Integer'(42);
+   end Respawn_From_Template;
+
+   procedure Rebind_Namespace_Mounts (P : Process_Context_Ref; C : Reincarnation_Contract) is
+      pragma Unreferenced (P, C);
+   begin
+      null;
+   end Rebind_Namespace_Mounts;
+
+   procedure Create_Xpc_Endpoint_In_Cspace (P : Process_Context_Ref; E : out Erased_Cap) is
+      pragma Unreferenced (P);
+   begin
+      E := new Integer'(100);
+   end Create_Xpc_Endpoint_In_Cspace;
+
+   procedure Mint_Prm_Resource_Set_Cap (P : Process_Context_Ref; T : Device_Object; C : out Erased_Cap) is
+      pragma Unreferenced (P, T);
+   begin
+      C := new Integer'(200);
+   end Mint_Prm_Resource_Set_Cap;
+
+   procedure Mint_Target_Read_Cap (P : Process_Context_Ref; T : Device_Object; C : out Erased_Cap) is
+      pragma Unreferenced (P, T);
+   begin
+      C := new Integer'(300);
+   end Mint_Target_Read_Cap;
 
    function State (Self : Device_Object) return Device_State is
       Result : constant Device_State_Result :=

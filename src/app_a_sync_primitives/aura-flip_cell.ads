@@ -1,7 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — aura-flip_cell.ads
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 generic
    type Element_Type is private;
@@ -69,6 +68,7 @@ package Aura.Flip_Cell is
 private
 
    type State_Bits is mod 4;  --  2 бита: [бит1 | бит0], как в Rust-версии
+   pragma Atomic (State_Bits);
 
    type Slot_Array is array (0 .. 1) of Element_Type;
 

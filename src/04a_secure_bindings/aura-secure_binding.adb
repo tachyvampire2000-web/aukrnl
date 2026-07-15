@@ -2,7 +2,6 @@
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Aura.Hal;
-with Aura.Vspace;
 with Aura.Ring;
 
 package body Aura.Secure_Binding is
@@ -24,7 +23,11 @@ package body Aura.Secure_Binding is
       end if;
    end Vspace_Unmap;
 
-   function Check_Valid (C : Prm_Resource_Set_Cap) return Kernel_Error is (Ok);
+   function Check_Valid (C : Prm_Resource_Set_Cap) return Kernel_Error is
+      pragma Unreferenced (C);
+   begin
+      return Ok;
+   end Check_Valid;
 
    procedure Map_Resource_Into_Vspace
      (V : Aura.Vspace.V_Space_Ref; R : Secure_Binding_Resource; H : Interfaces.Unsigned_64;

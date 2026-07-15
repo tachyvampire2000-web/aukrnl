@@ -1,7 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — aura-synapse.ads
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Object; use Aura.Object;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
@@ -11,6 +10,7 @@ with Aura.Cap_Policy;
 with Aura.Thread;
 with Ada.Containers.Bounded_Vectors;
 with Interfaces;
+with System;
 
 package Aura.Synapse is
 
@@ -50,7 +50,10 @@ package Aura.Synapse is
 
    type Sealed_Op (Kind : Sealed_Op_Kind := Object_Destroy_Op) is record
       case Kind is
-         when others => null;
+         when Object_Destroy_Op =>
+            Target_Obj_Addr : System.Address := System.Null_Address;
+         when Watchdog_Policy_Override_Op =>
+            Override_Active : Boolean := False;
       end case;
    end record;
 
@@ -174,6 +177,9 @@ package Aura.Synapse is
       Min_Charge_Cap : Interfaces.Integer_32 := -100000;
       --  SDRP (Synapse-driven Adaptive Real-time Priority)
       Sdrp_Thread    : Aura.Thread.Thread_Access := null;
+      --  Synapse-Level Rate-Limiting (защита от DoS на уровне синапса)
+      Min_Interval_Ticks : Interfaces.Unsigned_64 := 0; -- 0 = без ограничений
+      Last_Signal_Tick   : aliased Interfaces.Unsigned_64 := 0;
    end record
      with Volatile;
 

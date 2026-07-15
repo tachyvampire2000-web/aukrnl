@@ -25,6 +25,7 @@ package body Aura.Capability.Validity is
       Initial_Cspace_Slot_Bits  : Interfaces.Unsigned_32;
       Result                    : out Process_Context_Ref;
       Status                    : out Kernel_Error) is
+      pragma Unreferenced (Untyped, Offset, Initial_Cspace_Slot_Bits);
    begin
       Result := null;
       Status := Not_Supported;
