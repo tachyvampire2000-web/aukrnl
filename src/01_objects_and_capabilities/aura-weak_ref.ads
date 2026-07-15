@@ -8,6 +8,7 @@ with Interfaces;
 generic
    type Element_Type (<>) is limited private with Volatile;
    type Element_Access is access all Element_Type;
+   with function Get_Epoch (Obj : Element_Type) return Interfaces.Unsigned_32 is <>;
 package Aura.Weak_Ref is
 
    pragma SPARK_Mode (On);

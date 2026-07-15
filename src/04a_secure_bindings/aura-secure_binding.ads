@@ -1,11 +1,11 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — Secure Resource Bindings specification
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Object; use Aura.Object;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Rights; use Aura.Rights;
+with Aura.Vspace;
 with Interfaces;
 
 package Aura.Secure_Binding is
@@ -15,10 +15,19 @@ package Aura.Secure_Binding is
    use type Interfaces.Unsigned_64;
 
    type Iommu_Domain_Ref is access all Integer; -- Placeholder
-   type Process_Context_Weak_Ref is access all Integer; -- Placeholder
    type Prm_Resource_Set_Cap is access all Integer; -- Placeholder
-   type Process_Context_Ref is access all Integer; -- Placeholder
-   type Secure_Binding_Manage_Ref is access all Integer; -- Placeholder
+
+   type Process_Context is limited record
+      Vspace : Aura.Vspace.V_Space_Ref;
+   end record;
+   type Process_Context_Ref is access all Process_Context;
+   type Process_Context_Weak_Ref is access all Process_Context;
+
+   type Secure_Binding;
+   type Secure_Binding_Ref is access all Secure_Binding;
+   type Secure_Binding_Manage_Ref is record
+      Object : Secure_Binding_Ref;
+   end record;
 
    type Resource_Kind is (Mmio_Region, Dma_Buffer, Port_Io);
 

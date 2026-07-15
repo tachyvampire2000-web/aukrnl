@@ -1,7 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — Namespaces specification
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Object; use Aura.Object;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
@@ -43,6 +42,10 @@ package Aura.Namespace is
       Is_Union        : Boolean;
       Attributes      : Attr_Table;
       Name            : Name_Strings.Bounded_String;
+      -- MAC Mandatory Label fields
+      Mac_Level      : Interfaces.Unsigned_8 := 0;
+      Mac_Categories : Interfaces.Unsigned_64 := 0;
+      Mac_Label_Set  : Boolean := False;
    end record;
 
    subtype Namespace_Node is Namespace_Node_Inner;

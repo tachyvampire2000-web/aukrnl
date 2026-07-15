@@ -1,7 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — Mandatory Access Control (MAC) implementation
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 package body Aura.Mac is
 
@@ -14,8 +13,14 @@ package body Aura.Mac is
       Status : out Kernel_Error)
    is
    begin
-      Status := Label_Immutable;  --  всегда — метка неизменяема после
-                                    --  создания, идентично Rust-версии
+      if Node.Mac_Label_Set then
+         Status := Label_Immutable;
+      else
+         Node.Mac_Level      := New_Label.Level;
+         Node.Mac_Categories := New_Label.Categories;
+         Node.Mac_Label_Set  := True;
+         Status := Ok;
+      end if;
    end Set_Mandatory_Label;
 
    procedure Propagate_Taint (Taint : in out Causal_Taint; Label : Mandatory_Label) is

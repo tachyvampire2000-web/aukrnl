@@ -1,7 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — Synchronization: Read-Copy Update (RCU) specification
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Capability;
@@ -11,6 +10,8 @@ with Interfaces;
 package Aura.Rcu is
 
    pragma SPARK_Mode (On);
+
+   use type Interfaces.Unsigned_64;
 
    type Layer_Access is access all Integer; -- Placeholder
    type Attr_Entry_Access is access all Integer; -- Placeholder
@@ -91,6 +92,8 @@ package Aura.Rcu is
       --  ли как fatal).
       procedure Call_Rcu (Cb : Rcu_Callback; Status : out Kernel_Error);
 
+      function Readers_Count return Interfaces.Unsigned_64;
+
    private
       Global_Gen     : aliased Interfaces.Unsigned_64 := 0;
       Active_Readers : aliased Interfaces.Unsigned_64 := 0;
@@ -124,6 +127,6 @@ package Aura.Rcu is
    --  Общий RCU-домен ядра — для подсистем, не заводящих свой.
    Global_Domain : aliased Rcu_Domain;
 
-   function Rcu_Read_Lock_Held return Boolean is (True) with Ghost;
+   function Rcu_Read_Lock_Held return Boolean is (Global_Domain.Readers_Count > 0) with Ghost;
 
 end Aura.Rcu;
