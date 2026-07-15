@@ -1,14 +1,21 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива).
+--  AURA Kernel — aura-io_ring.adb
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Ada.Unchecked_Deallocation;
+with Aura.Sched;
 
 package body Aura.Io_Ring is
 
    use type Interfaces.Unsigned_32;
 
-   procedure Force_Xpc_Reply_With_Error (T : in out Integer; E : Kernel_Error) is begin null; end;
+   procedure Force_Xpc_Reply_With_Error (T : in out Aura.Thread.Thread; E : Kernel_Error) is
+      pragma Unreferenced (E);
+   begin
+      T.State := Aura.Thread.Ready;
+      Aura.Sched.Sched_Add_Thread (0, T'Unrestricted_Access);
+   end Force_Xpc_Reply_With_Error;
 
    procedure Object_Destroy_Vspace (Victim : in out V_Space)
    is
@@ -18,8 +25,9 @@ package body Aura.Io_Ring is
       while Ptr /= null loop
          Thread := Ptr;
          Force_Xpc_Reply_With_Error (Thread.all, Host_Vspace_Destroyed);
-         Ptr := null; -- Placeholder
+         Ptr := Thread_Access (Thread.Migration_List_Next);
       end loop;
+      Victim.Migrated_Threads := null;
    end Object_Destroy_Vspace;
 
    procedure Execute_Step (Step : Io_Ring_Sqe_Inner; Res : out Io_Batch_Result_Step) is

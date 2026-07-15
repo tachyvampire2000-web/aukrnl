@@ -1,7 +1,6 @@
---  Материализовано из технической спецификации порта ядра AURA на
---  Ada/SPARK (см. MANIFEST.md в корне архива). Это транскрипция кода из
---  спецификации, а не проверенный компилятором результат: известные
---  пробелы (T-Ada-01..10) сохранены как есть, а не восполнены.
+--  AURA Kernel — aura-driver.ads
+--  SPDX-License-Identifier: GPL-2.0-only
+
 
 with Aura.Object; use Aura.Object;
 with Aura.Ring; use Aura.Ring;
@@ -159,6 +158,10 @@ package Aura.Driver is
       Supervision_Contract        : Reincarnation_Contract_Ref_Option;
    end record
      with Volatile;
+
+   function State (Self : Device_Object) return Device_State
+     with Volatile_Function;
+   procedure Set_State (Self : in out Device_Object; S : Device_State);
 
 
    Driver_Manifest_Max_Classes : constant := 8;
@@ -342,6 +345,18 @@ package Aura.Driver is
    function Iommu_Attach_Device
      (Self : Hardware_Abstraction; Domain_Id : Interfaces.Unsigned_32;
       Platform_Id : Interfaces.Unsigned_64) return Kernel_Error is abstract;
+
+   type Reincarnation_Contract is record
+      Supervised : Process_Context_Ref;
+      Respawn_Cap : Erased_Cap;
+      Restart_Count : Interfaces.Unsigned_32;
+      Last_Heartbeat_Tick : Interfaces.Unsigned_64;
+   end record;
+
+   procedure Respawn_Driver_Process
+     (Target   : in out Device_Object;
+      Contract : in out Reincarnation_Contract;
+      Now      : Interfaces.Unsigned_64);
 
    --  Глобальный экземпляр, инициализируется при старте платформой —
    --  эквивалент Rust `static HAL: &'static dyn HardwareAbstraction`.

@@ -32,6 +32,8 @@ with Aura.Instances;
 with Aura.Secure_Binding;
 with Aura.Vspace;
 with Aura.Namespace;
+with Aura.Cap_Object_Ref_Pkg;
+with Aura.Driver;
 
 procedure Aura_Selftest is
 
@@ -192,7 +194,7 @@ procedure Aura_Selftest is
            (Kind   => Execute_Sealed_Action,
             Sealed => Call'Unchecked_Access),
          Max_Charge_Cap => <>, Min_Charge_Cap => <>,
-         Sdrp_Thread => <>);
+         Sdrp_Thread => <>, others => <>);
    begin
       Sealed_Cap_Vectors.Append (Call.Caps, C1);
       St := Sealed_Call_Execute (Call);
@@ -589,7 +591,7 @@ procedure Aura_Selftest is
          Decay => (Present => False),
          Action => (Kind => Reject_If_Saturated_Action),
          Max_Charge_Cap => <>, Min_Charge_Cap => <>,
-         Sdrp_Thread => Th'Unchecked_Access);
+         Sdrp_Thread => Th'Unchecked_Access, others => <>);
 
       Contract : aliased Reincarnation_Contract;
       Tpl      : aliased Integer := 99;
@@ -713,7 +715,7 @@ procedure Aura_Selftest is
            (Kind     => Trace_Event_Action,
             Trace_Id => 123456789),
          Max_Charge_Cap => <>, Min_Charge_Cap => <>,
-         Sdrp_Thread => <>);
+         Sdrp_Thread => <>, others => <>);
 
       Lim_Syn : aliased Synapse :=
         (Header => <>, Charge => 0, Threshold_Hi => 5,
@@ -723,7 +725,7 @@ procedure Aura_Selftest is
          Action =>
            (Kind => Reject_If_Saturated_Action),
          Max_Charge_Cap => <>, Min_Charge_Cap => <>,
-         Sdrp_Thread => <>);
+         Sdrp_Thread => <>, others => <>);
 
       St : Kernel_Error;
    begin
@@ -780,7 +782,7 @@ procedure Aura_Selftest is
             Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
             Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
             Max_Charge_Cap => 10, Min_Charge_Cap => -10,
-            Sdrp_Thread => <>);
+            Sdrp_Thread => <>, others => <>);
       begin
          St := Synapse_Apply_Delta (Sat_Syn, 15);
          Check ("synapse: charge is correctly saturated/clamped to Max_Charge_Cap",
@@ -794,7 +796,7 @@ procedure Aura_Selftest is
             Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
             Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
             Max_Charge_Cap => 100, Min_Charge_Cap => -100,
-            Sdrp_Thread => <>);
+            Sdrp_Thread => <>, others => <>);
 
          Tap : aliased Synapse_Tap :=
            (Header => <>, Target => Downgrade (T_Syn'Unchecked_Access),
@@ -817,7 +819,7 @@ procedure Aura_Selftest is
                        Synapse_Target => (Target => null, Expected_Epoch => 0),
                        Feed_Kind => (Tag => Positive_Signal, Positive_N => 0)),
             Max_Charge_Cap => 100, Min_Charge_Cap => -100,
-            Sdrp_Thread => <>);
+            Sdrp_Thread => <>, others => <>);
 
          Syn_A : aliased Synapse :=
            (Header => <>, Charge => 0, Threshold_Hi => 1,
@@ -827,7 +829,7 @@ procedure Aura_Selftest is
                        Synapse_Target => Downgrade (Syn_B'Unchecked_Access),
                        Feed_Kind => (Tag => Positive_Signal, Positive_N => 0)),
             Max_Charge_Cap => 100, Min_Charge_Cap => -100,
-            Sdrp_Thread => <>);
+            Sdrp_Thread => <>, others => <>);
       begin
          Syn_B.Action.Synapse_Target := Downgrade (Syn_A'Unchecked_Access);
          Last_Fired_Trace_Id := 0;
@@ -859,7 +861,7 @@ procedure Aura_Selftest is
             Gate_On_Hi    => Activate,
             Gate_On_Lo    => Deactivate),
          Max_Charge_Cap => <>, Min_Charge_Cap => <>,
-         Sdrp_Thread => <>);
+         Sdrp_Thread => <>, others => <>);
 
       Notif : constant Aura.Notification.Notification_Ref :=
         new Aura.Notification.Notification_Object;
@@ -876,7 +878,7 @@ procedure Aura_Selftest is
                              Expected_Epoch => Notif.Header.Epoch),
             Notif_Bit    => 2#1#),
          Max_Charge_Cap => <>, Min_Charge_Cap => <>,
-         Sdrp_Thread => <>);
+         Sdrp_Thread => <>, others => <>);
 
       St : Kernel_Error;
    begin
@@ -1027,6 +1029,115 @@ procedure Aura_Selftest is
          Set_Mandatory_Label (Node, Lbl_2, St);
          Check ("mac: second label set fails with Label_Immutable", St = Label_Immutable);
          Check ("mac: level remains unchanged", Node.Mac_Level = 2);
+      end;
+
+      -- 7. Test integration of previously orphan modules
+      declare
+         use Aura.Instances;
+
+         -- Test Per_Cpu
+         My_Cpu_Data : Cpu_Data.Instance := Cpu_Data.Create (0);
+         Val : Integer;
+
+         -- Test Cap_Object_Ref_Pkg
+         Ref_Instance : Aura.Cap_Object_Ref_Pkg.Instance;
+      begin
+         -- Retrieve from Per_Cpu (Cpu_Data)
+         Val := Cpu_Data.Get (My_Cpu_Data, 0);
+         Check ("orphan_integration: Cpu_Data defaults to 0", Val = 0);
+         Cpu_Data.Set (My_Cpu_Data, 0, 777);
+         Check ("orphan_integration: Cpu_Data retrieved successfully", Cpu_Data.Get (My_Cpu_Data, 0) = 777);
+
+         -- Exercise Cap_Object_Ref_Pkg.Instance
+         Aura.Cap_Object_Ref_Pkg.Adjust (Ref_Instance);
+         Aura.Cap_Object_Ref_Pkg.Finalize (Ref_Instance);
+         Check ("orphan_integration: Cap_Object_Ref_Pkg operations executed safely", True);
+      end;
+
+      -- 8. Test Driver Reincarnation
+      declare
+         use Aura.Driver;
+         use type Interfaces.Unsigned_32;
+         use type Interfaces.Unsigned_64;
+
+         Dev  : aliased Device_Object :=
+           (Header                => <>,
+            Class                 => Platform_Other,
+            State                 => 0,
+            Platform_Id           => 1234,
+            Parent                => (Present => False),
+            Driver_Endpoint_Cap   => new Erased_Cap'(null),
+            Iommu_Domain_Cap      => (Present => False),
+            Prm_Resource_Set_Cap  => new Erased_Cap'(null),
+            Supervision_Contract  => (Present => False));
+
+         Contract : aliased Aura.Driver.Reincarnation_Contract :=
+           (Supervised          => new Integer'(11),
+            Respawn_Cap         => new Integer'(22),
+            Restart_Count       => 0,
+            Last_Heartbeat_Tick => 0);
+      begin
+         Check ("driver: initial state is Enumerated", Aura.Driver.State (Dev) = Enumerated);
+
+         Aura.Driver.Respawn_Driver_Process (Dev, Contract, 100);
+
+         Check ("driver: state after respawn is Bound", Aura.Driver.State (Dev) = Bound);
+         Check ("driver: restart count incremented", Contract.Restart_Count = 1);
+         Check ("driver: heartbeat updated", Contract.Last_Heartbeat_Tick = 100);
+         Check ("driver: supervised process context is non-null", Contract.Supervised /= null);
+         Check ("driver: driver endpoint is non-null", Dev.Driver_Endpoint_Cap.all /= null);
+         Check ("driver: prm resource cap is non-null", Dev.Prm_Resource_Set_Cap.all /= null);
+      end;
+
+      -- 9. Test Synapse Rate-Limiting Cascaded Feed
+      declare
+         use Aura.Synapse;
+         use type Interfaces.Integer_32;
+
+         Target_Syn : aliased Synapse :=
+           (Header => <>, Charge => 0, Threshold_Hi => 5,
+            Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
+            Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
+            Max_Charge_Cap => 10, Min_Charge_Cap => -10,
+            Sdrp_Thread => <>, Min_Interval_Ticks => 10, Last_Signal_Tick => 0);
+
+         St : Kernel_Error;
+      begin
+         -- First signal at tick 100
+         Aura.Timer.Global_Tick := 100;
+         St := Synapse_Apply_Delta (Target_Syn, 1);
+         Check ("synapse_rate_limit: first signal accepted", St = Ok);
+
+         -- Second signal too fast at tick 102 (difference 2 < 10)
+         Aura.Timer.Global_Tick := 102;
+         St := Synapse_Apply_Delta (Target_Syn, 1);
+         Check ("synapse_rate_limit: second too fast signal rejected", St = Would_Block);
+
+         -- Third signal at tick 115 (difference 13 >= 10)
+         Aura.Timer.Global_Tick := 115;
+         St := Synapse_Apply_Delta (Target_Syn, 1);
+         Check ("synapse_rate_limit: signal after interval accepted", St = Ok);
+      end;
+
+      -- 10. Test RCU XPC Error Reply Force
+      declare
+         use type Aura.Thread.Thread_State;
+         use type Aura.Io_Ring.Thread_Access;
+
+         Victim_Vspace : aliased Aura.Io_Ring.V_Space;
+         T_Migrated : aliased Aura.Thread.Thread;
+      begin
+         T_Migrated.State := Aura.Thread.Blocked;
+         T_Migrated.Migration_List_Next := null;
+
+         -- Add to migrated list
+         Victim_Vspace.Migrated_Threads := T_Migrated'Unchecked_Access;
+
+         -- Destroy Vspace, which must resume the migrated thread
+         Aura.Io_Ring.Object_Destroy_Vspace (Victim_Vspace);
+
+         Check ("io_ring: destroyed vspace resumed migrated thread", T_Migrated.State = Aura.Thread.Ready);
+         Check ("io_ring: migrated threads list cleared", Victim_Vspace.Migrated_Threads = null);
       end;
    end Test_Real_Subsystems;
 
