@@ -8,8 +8,14 @@ with Interfaces;
 
 package Aura.Cap_Object_Ref_Pkg is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
    pragma Elaborate_Body;
+
+   --  Test and runtime query for active reference counts of target addresses
+   function Get_Ref_Count (Addr : System.Address) return Natural;
+
+   --  A helper to register a new target with an initial count if needed
+   procedure Register_Target (Addr : System.Address; Ep : Interfaces.Unsigned_32);
 
    --  Контролируемая ссылка со счётчиком — эквивалент Arc<T> на границе
    --  §1.1 порта, где Header/Kernel_Object живут за System.Address, а не

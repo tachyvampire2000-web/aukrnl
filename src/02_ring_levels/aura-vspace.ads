@@ -16,4 +16,11 @@ package Aura.Vspace is
 
    type V_Space_Ref is access all V_Space;
 
+   type Process_Context is limited record
+      Vspace : V_Space_Ref;
+   end record;
+
+   type Process_Context_Ref is access all Process_Context;
+   type Process_Context_Weak_Ref is access all Process_Context;
+
 end Aura.Vspace;

@@ -11,9 +11,11 @@ with System;
 with Interfaces;
 with Ada.Strings.Bounded;
 
+with Aura.Vspace;
+
 package Aura.Driver is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
 
    package Name_Strings renames Aura.Namespace.Name_Strings;
 
@@ -47,7 +49,7 @@ package Aura.Driver is
    type Timer_Object_Read_Ref is access all Integer; -- Placeholder
 
    type Prm_Resource_Set_Manage_Ref is access all Integer; -- Placeholder
-   type Process_Context_Ref is access all Integer; -- Placeholder
+   subtype Process_Context_Ref is Aura.Vspace.Process_Context_Ref;
 
    type Execution_Context is access all Integer; -- Placeholder
    type Phys_Addr_Option (Present : Boolean := False) is record

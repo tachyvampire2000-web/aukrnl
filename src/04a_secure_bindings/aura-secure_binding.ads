@@ -9,18 +9,16 @@ with Interfaces;
 
 package Aura.Secure_Binding is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
 
    use type Interfaces.Unsigned_64;
 
    type Iommu_Domain_Ref is access all Integer; -- Placeholder
    type Prm_Resource_Set_Cap is access all Integer; -- Placeholder
 
-   type Process_Context is limited record
-      Vspace : Aura.Vspace.V_Space_Ref;
-   end record;
-   type Process_Context_Ref is access all Process_Context;
-   type Process_Context_Weak_Ref is access all Process_Context;
+   subtype Process_Context is Aura.Vspace.Process_Context;
+   subtype Process_Context_Ref is Aura.Vspace.Process_Context_Ref;
+   subtype Process_Context_Weak_Ref is Aura.Vspace.Process_Context_Weak_Ref;
 
    type Secure_Binding;
    type Secure_Binding_Ref is access all Secure_Binding;

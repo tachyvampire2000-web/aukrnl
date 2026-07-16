@@ -1,11 +1,12 @@
 --  AURA Kernel — aura-driver.adb
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Aura.Vspace;
 
 package body Aura.Driver is
 
    use type Interfaces.Unsigned_32;
-
+   use type Aura.Vspace.Process_Context_Ref;
 
    function Check_Valid (Obj : Prm_Resource_Set) return Kernel_Error is (Ok); -- Placeholder
    procedure Hal_Release_Msi_X_Vector (Id : Interfaces.Unsigned_64; Idx : Interfaces.Unsigned_16) is begin null; end;
@@ -15,14 +16,14 @@ package body Aura.Driver is
       pragma Unreferenced (C);
    begin
       if P /= null then
-         P.all := 0; -- Mark as killed
+         P.Vspace := null; -- Mark as dead/killed
       end if;
    end Kill_Process;
 
    procedure Respawn_From_Template (P : Process_Context_Ref; C : Erased_Cap; New_P : out Process_Context_Ref) is
       pragma Unreferenced (P, C);
    begin
-      New_P := new Integer'(42);
+      New_P := new Aura.Vspace.Process_Context'(Vspace => new Aura.Vspace.V_Space);
    end Respawn_From_Template;
 
    procedure Rebind_Namespace_Mounts (P : Process_Context_Ref; C : Reincarnation_Contract) is
