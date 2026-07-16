@@ -939,7 +939,7 @@ procedure Aura_Selftest is
       -- 2. Test Secure_Binding with real Page_Table_Root
       declare
          Owner_Vspace : aliased V_Space;
-         Owner_Proc   : aliased Process_Context;
+         Owner_Proc   : aliased Aura.Vspace.Process_Context;
          Res          : Secure_Binding_Resource (Mmio_Region);
          S_Manage     : Secure_Binding_Manage_Ref;
          St           : Kernel_Error;
@@ -949,7 +949,7 @@ procedure Aura_Selftest is
          Res.Mmio_Phys_Base := 16#9000_0000#;
          Res.Mmio_Size      := 8192;
 
-         Secure_Binding_Create (null, Res, Owner_Proc'Unchecked_Access, 0, S_Manage, St);
+         Secure_Binding_Create (null, Res, Aura.Vspace.Process_Context_Ref'(Owner_Proc'Unchecked_Access), 0, S_Manage, St);
          Check ("secure_binding: create succeeds and maps resource", St = Ok and S_Manage.Object /= null);
 
          if S_Manage.Object /= null then
@@ -1038,9 +1038,6 @@ procedure Aura_Selftest is
          -- Test Per_Cpu
          My_Cpu_Data : Cpu_Data.Instance := Cpu_Data.Create (0);
          Val : Integer;
-
-         -- Test Cap_Object_Ref_Pkg
-         Ref_Instance : Aura.Cap_Object_Ref_Pkg.Instance;
       begin
          -- Retrieve from Per_Cpu (Cpu_Data)
          Val := Cpu_Data.Get (My_Cpu_Data, 0);
@@ -1048,10 +1045,28 @@ procedure Aura_Selftest is
          Cpu_Data.Set (My_Cpu_Data, 0, 777);
          Check ("orphan_integration: Cpu_Data retrieved successfully", Cpu_Data.Get (My_Cpu_Data, 0) = 777);
 
-         -- Exercise Cap_Object_Ref_Pkg.Instance
-         Aura.Cap_Object_Ref_Pkg.Adjust (Ref_Instance);
-         Aura.Cap_Object_Ref_Pkg.Finalize (Ref_Instance);
-         Check ("orphan_integration: Cap_Object_Ref_Pkg operations executed safely", True);
+         -- Test Cap_Object_Ref_Pkg
+         declare
+            use Aura.Cap_Object_Ref_Pkg;
+            use type System.Address;
+            Dummy_Object : aliased Integer := 42;
+            Dummy_Addr   : constant System.Address := Dummy_Object'Address;
+            Ref1         : Instance;
+         begin
+            Register_Target (Dummy_Addr, 100);
+            Check ("cap_object_ref: initial registered count is 1", Get_Ref_Count (Dummy_Addr) = 1);
+
+            Ref1.Target := Dummy_Addr;
+            Ref1.Epoch := 100;
+            Adjust (Ref1);
+            Check ("cap_object_ref: count after adjust is 2", Get_Ref_Count (Dummy_Addr) = 2);
+
+            Finalize (Ref1);
+            Check ("cap_object_ref: count after finalize is 1", Get_Ref_Count (Dummy_Addr) = 1);
+
+            Finalize (Ref1);
+            Check ("cap_object_ref: count after hitting zero is 0", Get_Ref_Count (Dummy_Addr) = 0);
+         end;
       end;
 
       -- 8. Test Driver Reincarnation
@@ -1059,6 +1074,8 @@ procedure Aura_Selftest is
          use Aura.Driver;
          use type Interfaces.Unsigned_32;
          use type Interfaces.Unsigned_64;
+
+         Dummy_Proc : aliased Aura.Vspace.Process_Context;
 
          Dev  : aliased Device_Object :=
            (Header                => <>,
@@ -1072,7 +1089,7 @@ procedure Aura_Selftest is
             Supervision_Contract  => (Present => False));
 
          Contract : aliased Aura.Driver.Reincarnation_Contract :=
-           (Supervised          => new Integer'(11),
+           (Supervised          => Aura.Vspace.Process_Context_Ref'(Dummy_Proc'Unchecked_Access),
             Respawn_Cap         => new Integer'(22),
             Restart_Count       => 0,
             Last_Heartbeat_Tick => 0);

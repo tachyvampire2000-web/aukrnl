@@ -7,6 +7,8 @@ with Aura.Ring;
 package body Aura.Secure_Binding is
 
    use type Aura.Vspace.V_Space_Ref;
+   use type Aura.Vspace.Process_Context_Ref;
+   use type Aura.Vspace.Process_Context_Weak_Ref;
 
    procedure Upgrade (W : Process_Context_Weak_Ref; R : out Process_Context_Ref; A : out Boolean) is
    begin
