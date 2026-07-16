@@ -2,11 +2,14 @@
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Ada.Text_IO; use Ada.Text_IO;
+with Ada.Unchecked_Conversion;
 with Interfaces; use type Interfaces.Unsigned_64;
 with Aura.Thread;
 with Aura.Sched;
 with Aura.Cap_Node;
 with Aura.Package_Fs;
+with Aura.Namespace;
+with Aura.Vspace;
 with Aura.Ring;
 with Aura.Timer;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
@@ -17,13 +20,33 @@ package body Aura.Boot is
    use type Aura.Sched.Scheduler_Decision;
    use type Aura.Thread.Thread_Access;
 
+   type Package_Union_Access is access all Aura.Package_Fs.P_Union;
+
+   function To_P_Union_Ref is new Ada.Unchecked_Conversion
+     (Source => Package_Union_Access,
+      Target => Aura.Namespace.P_Union_Ref);
+
+   function To_Thread_Vspace_Ref is new Ada.Unchecked_Conversion
+     (Source => Aura.Vspace.V_Space_Ref,
+      Target => Aura.Thread.V_Space_Ref);
+
    --  Static allocations for Boot / System Loader
-   Init_Thread : aliased Aura.Thread.Thread;
+   Init_Thread  : aliased Aura.Thread.Thread;
+   Init_Vspace  : aliased Aura.Vspace.V_Space;
    Stable_Image : aliased Aura.Package_Fs.Package_Image_Object;
-   Base_Union : aliased Aura.Package_Fs.P_Union :=
+   Base_Union   : aliased Aura.Package_Fs.P_Union :=
      (Images         => [others => null],
       Image_Count    => 0,
       Combined_Bloom => (Combined => [others => 0]));
+
+   Init_Layer : constant Aura.Namespace.Layer :=
+     (Header  => <>,
+      Kind    => Aura.Namespace.System,
+      Id      => Aura.Namespace.Name_Strings.To_Bounded_String ("stable"),
+      Slot    => (Idx => 0, Gen => 1),
+      State   => Aura.Namespace.Live,
+      Backend => (Kind  => Aura.Namespace.Package_Backend,
+                  Union => To_P_Union_Ref (Base_Union'Unchecked_Access)));
 
    procedure Boot_System is
       Status : Kernel_Error;
@@ -56,6 +79,9 @@ package body Aura.Boot is
       Put_Line ("  - Stable image mounted. Combined Bloom(0):" & Base_Union.Combined_Bloom.Combined (0)'Image);
 
       Put_Line ("ST-005: Setup System Layer [C::stable] for ""/exe/init""...");
+      Init_Vspace.Page_Table_Root := 16#CAFE_BAB0#;
+      Put_Line ("  - System Layer ID: " & Aura.Namespace.Name_Strings.To_String (Init_Layer.Id));
+      Put_Line ("  - Associated Page Table Root: 0x" & Interfaces.Unsigned_64'Image (Init_Vspace.Page_Table_Root));
 
       Put_Line ("ST-006: Spawning first system process thread: ""/exe/init""...");
       Init_Thread.State := Aura.Thread.Ready;
@@ -70,9 +96,10 @@ package body Aura.Boot is
       Init_Thread.Own_Sched_Ctx.Cpu_Affinity := 1;
       Init_Thread.Own_Sched_Ctx.Numa_Node := 1;
 
-      -- Set Initial execution context registers
+      -- Set Initial execution context registers and bind Vspace
       Init_Thread.Exec_Ctx.Registers (1) := 16#1000_0000#; -- Instruction entry point
       Init_Thread.Exec_Ctx.Stack_Ptr := 16#7FFF_FFFF_0000#; -- Initial stack pointer
+      Init_Thread.Exec_Ctx.Bound_Vspace := To_Thread_Vspace_Ref (Init_Vspace'Unchecked_Access);
 
       Put_Line ("  - Init thread configured (Budget: 2ms, Period: 10ms, Entry: 0x10000000, Stack: 0x7FFFFFFF0000)");
 
