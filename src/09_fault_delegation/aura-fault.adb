@@ -113,7 +113,6 @@ package body Aura.Fault is
    is
       function To_Endpoint is new Ada.Unchecked_Conversion (System.Address, Fault_Endpoint_Access);
       Handler : Fault_Endpoint_Access;
-      pragma Unreferenced (Msg);
    begin
       if Th.Fault_Endpoint = System.Null_Address then
          Status := User_Fault;
@@ -126,7 +125,8 @@ package body Aura.Fault is
          return;
       end if;
 
-      -- Route fault and transition thread state to Blocked
+      -- Route fault, save details in the handler, and transition thread state to Blocked
+      Handler.Last_Fault := Msg;
       Th.State := Aura.Thread.Blocked;
       Status := Ok;
    end Dispatch_Fault_To_Userspace;

@@ -29,6 +29,8 @@ package body Aura.Driver is
    procedure Rebind_Namespace_Mounts (P : Process_Context_Ref; C : Reincarnation_Contract) is
       pragma Unreferenced (P, C);
    begin
+      --  OPEN: Rebinding namespace mounts requires a global mount table or active namespace registry,
+      --  which is currently not fully implemented in the reference backend. Stub/No-op.
       null;
    end Rebind_Namespace_Mounts;
 

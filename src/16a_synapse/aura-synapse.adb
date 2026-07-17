@@ -68,6 +68,13 @@ package body Aura.Synapse is
       return Ok;
    end Erased_Cap_Check_Valid;
 
+   Global_Watchdog_Override_Active : Boolean := False;
+
+   function Watchdog_Override_Active return Boolean is
+   begin
+      return Global_Watchdog_Override_Active;
+   end Watchdog_Override_Active;
+
    function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error is
       use type System.Address;
       type Object_Header_Access is access all Object_Header;
@@ -96,6 +103,7 @@ package body Aura.Synapse is
             end if;
             return Ok;
          when Watchdog_Policy_Override_Op =>
+            Global_Watchdog_Override_Active := Call.Op.Override_Active;
             return Ok;
       end case;
    end Sealed_Call_Execute;

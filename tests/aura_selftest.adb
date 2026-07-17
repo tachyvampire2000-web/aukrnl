@@ -34,8 +34,24 @@ with Aura.Vspace;
 with Aura.Namespace;
 with Aura.Cap_Object_Ref_Pkg;
 with Aura.Driver;
+with Aura.Object;
+with Aura.Entropy;
+with Aura.Ring;
 
 procedure Aura_Selftest is
+
+   package Entropy_Test_Pkg is
+      type Dummy_Entropy_Obj is new Aura.Object.Kernel_Object with null record;
+      overriding function Header (Self : Dummy_Entropy_Obj) return Aura.Object.Object_Header;
+      procedure Dummy_Entropy_Feed is new Aura.Entropy.Entropy_Feed (Dummy_Entropy_Obj);
+   end Entropy_Test_Pkg;
+
+   package body Entropy_Test_Pkg is
+      overriding function Header (Self : Dummy_Entropy_Obj) return Aura.Object.Object_Header is
+      begin
+         return (Epoch => 1, Min_Ring => Aura.Ring.Ring3, Rcu_Domain => null);
+      end Header;
+   end Entropy_Test_Pkg;
 
    use type Interfaces.Unsigned_64;
 
@@ -213,6 +229,23 @@ procedure Aura_Selftest is
       Call.Caps.Replace_Element (2, (Cap_Token => 222, Valid => True));
       St := Synapse_Apply_Delta (Sharp, 1);
       Check ("synapse: execute sealed succeeds if all caps valid", St = Ok);
+
+      -- Test Watchdog Policy Override branch
+      declare
+         Override_Call : aliased Sealed_Call :=
+           (Caps => <>, Op => (Kind => Watchdog_Policy_Override_Op, Override_Active => True));
+         Override_St   : Kernel_Error;
+      begin
+         Override_St := Sealed_Call_Execute (Override_Call);
+         Check ("sealed_call: execute override op ok", Override_St = Ok);
+         Check ("sealed_call: watchdog override is active", Watchdog_Override_Active);
+
+         -- Disable override
+         Override_Call.Op.Override_Active := False;
+         Override_St := Sealed_Call_Execute (Override_Call);
+         Check ("sealed_call: execute override deactivate ok", Override_St = Ok);
+         Check ("sealed_call: watchdog override is deactivated", not Watchdog_Override_Active);
+      end;
    end Test_Sealed_Call;
 
    procedure Test_Package_Fs is
@@ -642,8 +675,9 @@ procedure Aura_Selftest is
    procedure Test_Fault_Delegation is
       use Aura.Fault;
       use Aura.Thread;
+      use type Interfaces.Unsigned_32;
       Th : aliased Aura.Thread.Thread;
-      Ep : aliased Fault_Endpoint := (Header => <>, Handler_Proc => null, Handler_Ep => null);
+      Ep : aliased Fault_Endpoint := (Header => <>, Handler_Proc => null, Handler_Ep => null, Last_Fault => <>);
       Msg : Fault_Message := (Kind => 1, Fault_Addr => 0, Pc => 0, Thread_Id => 1);
       St : Kernel_Error;
    begin
@@ -656,6 +690,8 @@ procedure Aura_Selftest is
 
       Dispatch_Fault_To_Userspace (Th, Msg, St);
       Check ("fault: dispatching fault blocks the thread", St = Ok and Th.State = Blocked);
+      Check ("fault: message correctly preserved in handler",
+             Ep.Last_Fault.Kind = Msg.Kind and then Ep.Last_Fault.Thread_Id = Msg.Thread_Id);
    end Test_Fault_Delegation;
 
    procedure Test_NMI_Watchdog is
@@ -837,7 +873,65 @@ procedure Aura_Selftest is
          Check ("synapse: cascade fault limits recursion and sets diagnostic tracepoint",
                 St = Cascade_Too_Deep and Last_Fired_Trace_Id = 999999999);
       end;
+
+      -- 10. Test Entropy budget feed and validation (Check_Valid)
+      declare
+         use Entropy_Test_Pkg;
+         use type Interfaces.Unsigned_64;
+         Dummy_Prm_Cap : aliased Integer := 123;
+         Feed_St       : Kernel_Error;
+         Init_Budget   : constant Interfaces.Unsigned_64 := Aura.Entropy.Entropy_Budget;
+      begin
+         -- Test with null capability (should fail with Bad_Cap)
+         Dummy_Entropy_Feed (null, 100, Feed_St);
+         Check ("entropy: feed with null cap fails with Bad_Cap", Feed_St = Bad_Cap);
+         Check ("entropy: budget unchanged on failed feed", Aura.Entropy.Entropy_Budget = Init_Budget);
+
+         -- Test with valid non-null capability
+         Dummy_Entropy_Feed (Dummy_Prm_Cap'Unchecked_Access, 500, Feed_St);
+         Check ("entropy: feed with valid cap succeeds", Feed_St = Ok);
+         Check ("entropy: budget correctly updated on successful feed", Aura.Entropy.Entropy_Budget = Init_Budget + 500);
+      end;
    end Test_New_Enhancements;
+
+   procedure Test_Channel is
+      use Aura.Channel;
+      Ch   : aliased Channel;
+      Ep_A : aliased Channel_Endpoint := (Header => <>, Channel => Ch'Unchecked_Access, Side => Side_A);
+      Ep_B : aliased Channel_Endpoint := (Header => <>, Channel => Ch'Unchecked_Access, Side => Side_B);
+
+      Write_Cap_A : constant Channel_Endpoint_Write_Ref := (Object => Ep_A'Unchecked_Access, Rights => Aura.Rights.Write);
+      Read_Cap_B  : constant Channel_Endpoint_Read_Ref := (Object => Ep_B'Unchecked_Access, Rights => Aura.Rights.Read);
+
+      Msg : Channel_Message := (Data => (others => 0), Data_Len => 0, Cap => (Present => False), Cause => (Present => False));
+      St  : Kernel_Error;
+   begin
+      -- Test Send successfully
+      Channel_Send (Write_Cap_A, Msg, St);
+      Check ("channel: send message succeeds", St = Ok);
+
+      -- Fill the queue to test overflow capacity
+      -- Depth is 64, we already sent 1 message, so send 63 more
+      for I in 1 .. 63 loop
+         Channel_Send (Write_Cap_A, Msg, St);
+      end loop;
+
+      -- Next send should fail with Capacity_Exceeded, and NOT deadlock or crash!
+      Channel_Send (Write_Cap_A, Msg, St);
+      Check ("channel: send overflow returns Capacity_Exceeded", St = Capacity_Exceeded);
+
+      -- Receive a message to free a slot
+      declare
+         Recv_Msg : Channel_Message;
+      begin
+         Channel_Recv (Read_Cap_B, (Present => False), Recv_Msg, St);
+         Check ("channel: receive message succeeds", St = Ok);
+      end;
+
+      -- Send should succeed again now that there is space
+      Channel_Send (Write_Cap_A, Msg, St);
+      Check ("channel: send succeeds after pop", St = Ok);
+   end Test_Channel;
 
    procedure Test_Synapse is
       use Aura.Synapse;
@@ -943,13 +1037,18 @@ procedure Aura_Selftest is
          Res          : Secure_Binding_Resource (Mmio_Region);
          S_Manage     : Secure_Binding_Manage_Ref;
          St           : Kernel_Error;
+         Dummy_Prm    : aliased Integer := 42;
       begin
          Owner_Vspace.Page_Table_Root := 16#CAFE_BAB0#;
          Owner_Proc.Vspace := Owner_Vspace'Unchecked_Access;
          Res.Mmio_Phys_Base := 16#9000_0000#;
          Res.Mmio_Size      := 8192;
 
+         -- Null capability is correctly rejected
          Secure_Binding_Create (null, Res, Aura.Vspace.Process_Context_Ref'(Owner_Proc'Unchecked_Access), 0, S_Manage, St);
+         Check ("secure_binding: create with null cap fails", St = Bad_Cap);
+
+         Secure_Binding_Create (Dummy_Prm'Unchecked_Access, Res, Aura.Vspace.Process_Context_Ref'(Owner_Proc'Unchecked_Access), 0, S_Manage, St);
          Check ("secure_binding: create succeeds and maps resource", St = Ok and S_Manage.Object /= null);
 
          if S_Manage.Object /= null then
@@ -1041,9 +1140,9 @@ procedure Aura_Selftest is
       begin
          -- Retrieve from Per_Cpu (Cpu_Data)
          Val := Cpu_Data.Get (My_Cpu_Data, 0);
-         Check ("orphan_integration: Cpu_Data defaults to 0", Val = 0);
+         Check ("per_cpu: Cpu_Data defaults to 0", Val = 0);
          Cpu_Data.Set (My_Cpu_Data, 0, 777);
-         Check ("orphan_integration: Cpu_Data retrieved successfully", Cpu_Data.Get (My_Cpu_Data, 0) = 777);
+         Check ("per_cpu: Cpu_Data retrieved successfully", Cpu_Data.Get (My_Cpu_Data, 0) = 777);
 
          -- Test Cap_Object_Ref_Pkg
          declare
@@ -1165,6 +1264,7 @@ begin
    Test_Scheduler;
    Test_Attr_Watch;
    Test_Cap_Policy;
+   Test_Channel;
    Test_Synapse;
    Test_Sealed_Call;
    Test_Package_Fs;

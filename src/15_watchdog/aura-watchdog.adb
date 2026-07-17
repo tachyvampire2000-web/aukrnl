@@ -4,6 +4,7 @@
 
 with Aura.Sched;
 with Aura.Timer;
+with Aura.Synapse;
 
 package body Aura.Watchdog is
 
@@ -215,6 +216,10 @@ package body Aura.Watchdog is
       Contract_Alive : Boolean;
       Contract_Ref   : Reincarnation_Contract_Ref;
    begin
+      if Aura.Synapse.Watchdog_Override_Active then
+         return; -- Watchdog policy overridden!
+      end if;
+
       case Wd.Policy is
          when Notify =>
             null;  --  Поведение T64 0.3.7: уведомление — единственное

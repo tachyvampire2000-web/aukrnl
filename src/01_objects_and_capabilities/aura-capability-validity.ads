@@ -5,6 +5,7 @@
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Rights; use Aura.Rights;
 with Interfaces;
+with Aura.Vspace;
 
 generic
 package Aura.Capability.Validity is
@@ -14,7 +15,7 @@ package Aura.Capability.Validity is
    use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
 
-   type Process_Context_Ref is access all Integer; -- Placeholder
+   subtype Process_Context_Ref is Aura.Vspace.Process_Context_Ref;
 
    function Current_Tick return Interfaces.Unsigned_64
      with Global => null;  --  внешняя, платформенно-зависимая (таймер)

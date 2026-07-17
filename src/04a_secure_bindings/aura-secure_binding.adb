@@ -26,9 +26,12 @@ package body Aura.Secure_Binding is
    end Vspace_Unmap;
 
    function Check_Valid (C : Prm_Resource_Set_Cap) return Kernel_Error is
-      pragma Unreferenced (C);
    begin
-      return Ok;
+      if C = null then
+         return Bad_Cap;
+      else
+         return Ok;
+      end if;
    end Check_Valid;
 
    procedure Map_Resource_Into_Vspace

@@ -66,6 +66,7 @@ package Aura.Synapse is
 
    function Erased_Cap_Check_Valid (Cap : Erased_Cap) return Kernel_Error;
    function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error;
+   function Watchdog_Override_Active return Boolean;
 
    type Integer_32_Option (Present : Boolean := False) is record
       case Present is
