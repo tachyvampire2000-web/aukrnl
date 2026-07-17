@@ -3,12 +3,15 @@
 
 with Ada.Text_IO; use Ada.Text_IO;
 with Interfaces; use type Interfaces.Unsigned_64;
+with Ada.Unchecked_Conversion;
 with Aura.Thread;
 with Aura.Sched;
 with Aura.Cap_Node;
 with Aura.Package_Fs;
 with Aura.Ring;
 with Aura.Timer;
+with Aura.Namespace;
+with Aura.Untyped;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 
 package body Aura.Boot is
@@ -16,6 +19,10 @@ package body Aura.Boot is
    use type Aura.Cap_Node.Cap_Node_Access;
    use type Aura.Sched.Scheduler_Decision;
    use type Aura.Thread.Thread_Access;
+   use type Aura.Namespace.Namespace_Node_Access;
+
+   function To_Cap_Any_Ref is new Ada.Unchecked_Conversion
+     (Aura.Cap_Node.Cap_Node_Access, Aura.Namespace.Cap_Any_Ref);
 
    --  Static allocations for Boot / System Loader
    Init_Thread : aliased Aura.Thread.Thread;
@@ -25,9 +32,16 @@ package body Aura.Boot is
       Image_Count    => 0,
       Combined_Bloom => (Combined => [others => 0]));
 
+   -- Physically untyped memory allocation for the system
+   Init_Mem : aliased Aura.Untyped.Untyped_Region :=
+     (Header => <>, Phys_Addr_Base => 16#1000_0000#, Size_Bits => 16, Is_Device => False, Allocated_Bitmap => <>);
+
    procedure Boot_System is
       Status : Kernel_Error;
       Cap_Node_Root : Aura.Cap_Node.Cap_Node_Access;
+      Root_Node     : Aura.Namespace.Namespace_Node_Access;
+      Exe_Node      : Aura.Namespace.Namespace_Node_Access;
+      Tick          : Interfaces.Unsigned_64 := 1;
    begin
       Put_Line ("======================================================================");
       Put_Line ("            AURA HYBRID CAPABILITY-BASED KERNEL BOOT SEQUENCE         ");
@@ -43,6 +57,12 @@ package body Aura.Boot is
       Put_Line ("  - Allocated root capability node successfully (Token:" & Cap_Node_Root.Cap_Token'Image & ")");
 
       Put_Line ("ST-003: Initializing Root Namespace ""/""...");
+      Aura.Namespace.Namespace_Create_Node (null, "/", null, Root_Node, Status);
+      if Status /= Ok or Root_Node = null then
+         Put_Line ("ERROR: Failed to initialize root namespace node!");
+         return;
+      end if;
+      Put_Line ("  - Root namespace ""/"" initialized successfully.");
 
       Put_Line ("ST-004: Mounting Package File System Image ""stable""...");
       Stable_Image.Id := 1;
@@ -56,6 +76,26 @@ package body Aura.Boot is
       Put_Line ("  - Stable image mounted. Combined Bloom(0):" & Base_Union.Combined_Bloom.Combined (0)'Image);
 
       Put_Line ("ST-005: Setup System Layer [C::stable] for ""/exe/init""...");
+      Aura.Namespace.Namespace_Create_Node (Root_Node, "exe", null, Exe_Node, Status);
+      if Status /= Ok or Exe_Node = null then
+         Put_Line ("ERROR: Failed to create ""/exe"" component under root namespace!");
+         return;
+      end if;
+
+      Aura.Namespace.Namespace_Mount (Exe_Node, "init", To_Cap_Any_Ref (Cap_Node_Root), Status);
+      if Status /= Ok then
+         Put_Line ("ERROR: Failed to mount capability at ""/exe/init""!");
+         return;
+      end if;
+      Put_Line ("  - System layer successfully bound to ""/exe/init"" under root namespace.");
+
+      -- Retype/Reserve physical memory range for /exe/init
+      Aura.Untyped.Try_Reserve_Range (Init_Mem, 0, 65536, Status);
+      if Status /= Ok then
+         Put_Line ("ERROR: Failed to reserve physical memory for /exe/init!");
+         return;
+      end if;
+      Put_Line ("  - Physical memory (65536 bytes) reserved successfully for /exe/init execution.");
 
       Put_Line ("ST-006: Spawning first system process thread: ""/exe/init""...");
       Init_Thread.State := Aura.Thread.Ready;
@@ -83,10 +123,9 @@ package body Aura.Boot is
       Put_Line ("            AURA SCHEDULER ACTIVE EXECUTION LOOP RUNNING              ");
       Put_Line ("======================================================================");
 
-      -- Run execution loop for 15 ticks to simulate EDF scheduling, CBS preemption and throttling,
-      -- and replenishment on deadline ticks.
-      for Tick in 1 .. 15 loop
-         Aura.Timer.Global_Tick := Interfaces.Unsigned_64 (Tick);
+      -- Infinite scheduler loop (representing the real OS active loop)
+      loop
+         Aura.Timer.Global_Tick := Tick;
          Put_Line ("--- Tick" & Tick'Image & " ---");
 
          -- Process scheduler tick on CPU 0 run queue
@@ -115,11 +154,10 @@ package body Aura.Boot is
                          Init_Thread.Own_Sched_Ctx.Deadline_Tick'Image & ")");
             end if;
          end;
-      end loop;
 
-      Put_Line ("======================================================================");
-      Put_Line ("            AURA KERNEL SHUTTING DOWN GRACEFULLY                      ");
-      Put_Line ("======================================================================");
+         Tick := Tick + 1;
+         delay 0.05; -- Simulate real-time tick interval on reference platform
+      end loop;
    end Boot_System;
 
 end Aura.Boot;
