@@ -894,6 +894,52 @@ procedure Aura_Selftest is
       end;
    end Test_New_Enhancements;
 
+   procedure Test_Namespace_Operations is
+      use Aura.Namespace;
+      Root : aliased Namespace_Node;
+      St   : Kernel_Error;
+
+      Dummy_Cap_1 : aliased Integer := 111;
+
+      Node_Dev    : Namespace_Node_Access;
+      Node_Lookup : Namespace_Node_Access;
+   begin
+      -- Initialize root node
+      Root.Name := Name_Strings.To_Bounded_String ("/");
+
+      -- 1. Create a subdirectory node "dev" under root
+      Namespace_Create_Node (Root'Unchecked_Access, "dev", null, Node_Dev, St);
+      Check ("namespace: create component dev ok", St = Ok and Node_Dev /= null);
+
+      -- 2. Create another subdirectory with the same name (should fail with Already_Exists)
+      declare
+         Fail_Node : Namespace_Node_Access;
+      begin
+         Namespace_Create_Node (Root'Unchecked_Access, "dev", null, Fail_Node, St);
+         Check ("namespace: duplicate component dev fails", St = Already_Exists);
+      end;
+
+      -- 3. Mount dummy capability 1 onto "/dev/entropy"
+      Namespace_Mount (Node_Dev, "entropy", Dummy_Cap_1'Unchecked_Access, St);
+      Check ("namespace: mount entropy cap succeeds", St = Ok);
+
+      -- 4. Lookup path "dev/entropy"
+      Namespace_Lookup (Root'Unchecked_Access, "dev/entropy", Node_Lookup, St);
+      Check ("namespace: lookup dev/entropy succeeds", St = Ok and Node_Lookup /= null);
+      if Node_Lookup /= null then
+         Check ("namespace: lookup resolved correct associated capability",
+                Node_Lookup.Associated = Dummy_Cap_1'Unchecked_Access);
+      end if;
+
+      -- 5. Lookup path "/dev/entropy" with leading slash
+      Namespace_Lookup (Root'Unchecked_Access, "/dev/entropy", Node_Lookup, St);
+      Check ("namespace: lookup with leading slash succeeds", St = Ok and Node_Lookup /= null);
+
+      -- 6. Lookup non-existent component (should fail with Not_Found)
+      Namespace_Lookup (Root'Unchecked_Access, "dev/not_exists", Node_Lookup, St);
+      Check ("namespace: lookup non-existent component fails", St = Not_Found);
+   end Test_Namespace_Operations;
+
    procedure Test_Channel is
       use Aura.Channel;
       Ch   : aliased Channel;
@@ -1264,6 +1310,7 @@ begin
    Test_Scheduler;
    Test_Attr_Watch;
    Test_Cap_Policy;
+   Test_Namespace_Operations;
    Test_Channel;
    Test_Synapse;
    Test_Sealed_Call;

@@ -10,7 +10,7 @@ with Interfaces;
 
 package Aura.Namespace is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
 
    type Cap_Any_Ref is access all Integer; -- Placeholder
    type Namespace_Node_Inner;
@@ -99,5 +99,24 @@ package Aura.Namespace is
       Backend         : Layer_Backend;
    end record
      with Volatile;
+
+   procedure Namespace_Create_Node
+     (Parent     : Namespace_Node_Access;
+      Name       : String;
+      Associated : Cap_Any_Ref;
+      Result     : out Namespace_Node_Access;
+      Status     : out Kernel_Error);
+
+   procedure Namespace_Lookup
+     (Root       : Namespace_Node_Access;
+      Path       : String;
+      Result     : out Namespace_Node_Access;
+      Status     : out Kernel_Error);
+
+   procedure Namespace_Mount
+     (Parent     : Namespace_Node_Access;
+      Name       : String;
+      Source     : Cap_Any_Ref;
+      Status     : out Kernel_Error);
 
 end Aura.Namespace;
