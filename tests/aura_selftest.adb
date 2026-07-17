@@ -898,7 +898,20 @@ procedure Aura_Selftest is
 
    procedure Test_Namespace_Operations is
       use Aura.Namespace;
-      Root : aliased Namespace_Node;
+      Root : aliased Namespace_Node :=
+        (Header => <>,
+         Associated => null,
+         Parent => null,
+         First_Child => null,
+         Next_Sibling => null,
+         Union_Target => null,
+         Union_Priority => 0,
+         Is_Union => False,
+         Attributes => null,
+         Name => Name_Strings.To_Bounded_String ("/"),
+         Mac_Level => 0,
+         Mac_Categories => 0,
+         Mac_Label_Set => False);
       St   : Kernel_Error;
 
       Dummy_Cap_1 : aliased Integer := 111;
@@ -906,8 +919,6 @@ procedure Aura_Selftest is
       Node_Dev    : Namespace_Node_Access;
       Node_Lookup : Namespace_Node_Access;
    begin
-      -- Initialize root node
-      Root.Name := Name_Strings.To_Bounded_String ("/");
 
       -- 1. Create a subdirectory node "dev" under root
       Namespace_Create_Node (Root'Unchecked_Access, "dev", null, Node_Dev, St);
