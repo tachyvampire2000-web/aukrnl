@@ -6,6 +6,7 @@
 with Ada.Text_IO;           use Ada.Text_IO;
 with Ada.Command_Line;
 with Interfaces;
+with Ada.Containers;
 
 with Aura.Rights;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
@@ -37,6 +38,7 @@ with Aura.Driver;
 with Aura.Object;
 with Aura.Entropy;
 with Aura.Ring;
+with Aura.Untyped;
 
 procedure Aura_Selftest is
 
@@ -940,6 +942,40 @@ procedure Aura_Selftest is
       Check ("namespace: lookup non-existent component fails", St = Not_Found);
    end Test_Namespace_Operations;
 
+   procedure Test_Untyped_Allocation is
+      use Aura.Untyped;
+      use type Ada.Containers.Count_Type;
+      Region : aliased Untyped_Region :=
+        (Header => <>, Phys_Addr_Base => 16#1000_0000#, Size_Bits => 20, Is_Device => False, Allocated_Bitmap => <>);
+      Cap    : constant Untyped_Manage_Ref := (Object => Region'Unchecked_Access);
+      St     : Kernel_Error;
+   begin
+      -- 1. Successful reservation of 256 bytes at offset 1024 (4 granules of 64 bytes)
+      Try_Reserve_Range (Region, 1024, 256, St);
+      Check ("untyped: first reserve range succeeds", St = Ok);
+
+      -- 2. Duplicate/overlapping reservation should fail with Already_Exists
+      Try_Reserve_Range (Region, 1024, 128, St);
+      Check ("untyped: overlapping reserve range fails with Already_Exists", St = Already_Exists);
+
+      -- 3. Dynamic bitmap vector expansion (using offset 8192, granule 128 in word 3)
+      Try_Reserve_Range (Region, 8192, 64, St);
+      Check ("untyped: reserve at higher offset succeeds", St = Ok);
+      declare
+         Bitmap : constant Bitmap_Vectors.Vector := Region.Allocated_Bitmap;
+      begin
+         Check ("untyped: bitmap expanded to cover word 3", Bitmap_Vectors.Length (Bitmap) >= 3);
+      end;
+
+      -- 4. Retype with overflow check on multiplication
+      Untyped_Retype (Cap, 0, Interfaces.Unsigned_64'Last, 10, St);
+      Check ("untyped: retype with arithmetic overflow fails with Overflow", St = Overflow);
+
+      -- 5. Retype exceeding region bounds (offset + size > 1 MB)
+      Untyped_Retype (Cap, 524288, 1, 524289, St);
+      Check ("untyped: retype exceeding region size fails with Overflow", St = Overflow);
+   end Test_Untyped_Allocation;
+
    procedure Test_Channel is
       use Aura.Channel;
       Ch   : aliased Channel;
@@ -1311,6 +1347,7 @@ begin
    Test_Attr_Watch;
    Test_Cap_Policy;
    Test_Namespace_Operations;
+   Test_Untyped_Allocation;
    Test_Channel;
    Test_Synapse;
    Test_Sealed_Call;
