@@ -48,22 +48,9 @@ package Aura.Package_Fs is
      (Union  : in out P_Union;
       Image  : Package_Image_Mount_Ref;  --  требует Mount
       Status : out Kernel_Error);
-   --  OPEN (портировано из todo!() Rust-версии, §12.3): тело не
-   --  реализовано ни в Rust-документе, ни здесь. Пять шагов плана
-   --  переносятся как комментарий:
-   --    1. Читать Слой A синхронно.
-   --    2. Проверить Слой C (Combined_Bloom) на возможный конфликт путей
-   --       с уже смонтированными пакетами; при совпадении — дотест
-   --       Hash-Trie по точному пути (бит блума мог дать ложное
-   --       совпадение).
-   --    3. Если найден РЕАЛЬНЫЙ конфликт пути с другим пакетом в
-   --       P_Union — отказ Already_Exists. Никакого priority, который
-   --       мог бы "разрешить" конфликт в пользу одного из пакетов: два
-   --       пакета, претендующих на один путь, — ошибка установки, а не
-   --       повод выбирать победителя.
-   --    4. Создать заглушки union-узлов для нового пакета, влить в общее
-   --       плоское дерево P_Union.
-   --    5. Обновить Combined_Bloom добавлением Слоя C нового пакета.
+   --  PARTIALLY OPEN: Package mounting with Bloom filter conflict checks and Combined_Bloom
+   --  updating is fully implemented. Precise Hash-Trie check to verify exact path conflicts
+   --  (to eliminate rare Bloom filter collision false positives) remains open for implementation.
 
    --  Обратная операция: убрать пакет из P_Union (например, при удалении
    --  ПО).

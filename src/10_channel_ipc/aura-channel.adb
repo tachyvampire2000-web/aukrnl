@@ -108,7 +108,6 @@ package body Aura.Channel is
    is
       Ch       : Channel renames Ep.Object.Channel.all;
       Q        : Channel_Queue;
-      Push_Status : Kernel_Error;
    begin
       Status := Check_Valid (Ep);
       if Status /= Ok then
@@ -118,6 +117,11 @@ package body Aura.Channel is
       case Ep.Object.Side is
          when Side_A =>
             Ch.A_To_B.Lock (Q);
+            if Channel_Msg_Vectors.Length (Q.Msgs) >= Channel_Queue_Depth then
+               Ch.A_To_B.Unlock (Q);
+               Status := Capacity_Exceeded;
+               return;
+            end if;
             Channel_Msg_Vectors.Append (Q.Msgs, Msg);
             --  Waiter_Count читается напрямую только для проверки «есть
             --  ли кто» — пробуждение безопасно даже при
@@ -128,6 +132,11 @@ package body Aura.Channel is
             Ch.A_To_B.Unlock (Q);
          when Side_B =>
             Ch.B_To_A.Lock (Q);
+            if Channel_Msg_Vectors.Length (Q.Msgs) >= Channel_Queue_Depth then
+               Ch.B_To_A.Unlock (Q);
+               Status := Capacity_Exceeded;
+               return;
+            end if;
             Channel_Msg_Vectors.Append (Q.Msgs, Msg);
             if Waiter_Count_Snapshot (Q.Wait) > 0 then
                Wake_All_With_Signal (Q.Wait);

@@ -8,12 +8,14 @@ package body Aura.Reincarnation is
 
    use type Interfaces.Unsigned_32;
    use type System.Address;
+   use type Aura.Vspace.Process_Context_Ref;
 
    procedure Kill_Process (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref) is
-      pragma Unreferenced (Proc, Respawn_Cap);
+      pragma Unreferenced (Respawn_Cap);
    begin
-      --  In reference backend, this is a diagnostic stub/no-op
-      null;
+      if Proc /= null then
+         Proc.Vspace := null; -- Mark as dead/killed
+      end if;
    end Kill_Process;
 
    procedure Respawn_From_Template
@@ -21,13 +23,15 @@ package body Aura.Reincarnation is
    is
       pragma Unreferenced (Proc, Respawn_Cap);
    begin
-      --  Allocate a placeholder process context reference
-      New_Ctx := new Integer'(42);
+      -- Allocate a real process context with a fresh VSpace root
+      New_Ctx := new Aura.Vspace.Process_Context'(Vspace => new Aura.Vspace.V_Space);
    end Respawn_From_Template;
 
    procedure Rebind_Namespace_Mounts (Proc : Process_Context_Ref; Contract : Reincarnation_Contract) is
       pragma Unreferenced (Proc, Contract);
    begin
+      --  OPEN: Rebinding namespace mounts requires a global mount table or active namespace registry,
+      --  which is currently not fully implemented in the reference backend. Stub/No-op.
       null;
    end Rebind_Namespace_Mounts;
 
@@ -40,8 +44,7 @@ package body Aura.Reincarnation is
          when Terminate_Container =>
             null;
          when Kernel_Panic =>
-            -- Diagnostic panic placeholder under reference backend
-            null;
+            raise Program_Error with "AURA KERNEL PANIC: Reincarnation contract escalation limit reached!";
       end case;
    end Contract_Escalation;
 

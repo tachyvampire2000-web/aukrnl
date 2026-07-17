@@ -7,12 +7,13 @@ with Interfaces;
 with System;
 
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
+with Aura.Vspace;
 
 package Aura.Reincarnation is
 
    pragma SPARK_Mode (Off);
 
-   type Process_Context_Ref is access all Integer; -- Placeholder
+   subtype Process_Context_Ref is Aura.Vspace.Process_Context_Ref;
    type Cap_Any_Ref is access all Integer; -- Placeholder
    type Cap_Snapshot is access all Integer; -- Placeholder
 

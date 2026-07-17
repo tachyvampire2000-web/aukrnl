@@ -35,10 +35,17 @@ package body Aura.Io_Ring is
       if Step.Cap_Index = 0 then
          Res.Status := Bad_Cap;
          Res.New_Value := Step;
-      else
-         Res.Status := Ok;
-         Res.New_Value := Step;
+         return;
       end if;
+
+      case Step.Op_Code is
+         when Read | Write | Map_Memory | Unmap_Memory | Attr_Get | Attr_Set | Attr_Watch | Mount | Device_Query =>
+            Res.Status := Ok;
+            Res.New_Value := Step;
+         when others =>
+            Res.Status := Not_Supported;
+            Res.New_Value := Step;
+      end case;
    end Execute_Step;
 
    function Io_Batch_Compile (Sqes : Io_Ring_Sqe_Array) return Io_Batch is

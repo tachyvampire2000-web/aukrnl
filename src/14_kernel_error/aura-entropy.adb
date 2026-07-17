@@ -7,7 +7,14 @@ with Aura.Hal;
 
 package body Aura.Entropy is
 
-   function Check_Valid (Cap : Object_Bind_Prm_Ref) return Kernel_Error is (Ok);
+   function Check_Valid (Cap : Object_Bind_Prm_Ref) return Kernel_Error is
+   begin
+      if Cap = null then
+         return Bad_Cap;
+      else
+         return Ok;
+      end if;
+   end Check_Valid;
 
    procedure Entropy_Consume
      (Bytes : Interfaces.Unsigned_64; Status : out Kernel_Error)

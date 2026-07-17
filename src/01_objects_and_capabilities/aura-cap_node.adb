@@ -122,6 +122,10 @@ package body Aura.Cap_Node is
                         exit;
                      end if;
                   end loop;
+
+                  if not Freed then
+                     raise Program_Error with "EBR: Retired node not found in Pool_Nodes!";
+                  end if;
                end;
 
                -- Shift remaining elements
