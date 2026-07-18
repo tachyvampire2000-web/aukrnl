@@ -1,7 +1,11 @@
 --  AURA Kernel — Memory of Scar implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Interfaces;
+
 package body Aura.Proposals.Scar_Memory is
+
+   use type Interfaces.Unsigned_64;
 
    procedure Record_Crash_Scar
      (Context  : in out Persistent_Scar_Context;

@@ -1,23 +1,36 @@
 --  AURA Kernel — Capability Metabolism implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Aura.Synapse;
+with Interfaces;
+
 package body Aura.Proposals.Metabolism is
+
+   use type Aura.Synapse.Synapse_Ref;
+   use type Interfaces.Integer_32;
 
    procedure Process_Metabolic_Tick
      (Node   : in out Managed_Cap_Node;
       Status : out Kernel_Error)
    is
+      Err : Kernel_Error;
    begin
-      --  Under reference platform, simulate deduction of Rent_Per_Tick from
-      --  associated Synapse "wallet". If current wallet charge goes below Lower_Threshold,
-      --  we deactivate or revoke the capability.
-      if Node.Policy.Wallet_Addr = System.Null_Address then
+      if Node.Policy.Wallet = null then
          Status := Invalid_Argument;
          return;
       end if;
 
-      if Node.Policy.Rent_Per_Tick > 1000 then
-         --  Simulate rent threshold underflow
+      -- Deduct rent by applying negative signal (as a negative delta value)
+      Err := Aura.Synapse.Synapse_Apply_Delta
+        (Node.Policy.Wallet.all, -Interfaces.Integer_32 (Node.Policy.Rent_Per_Tick));
+
+      if Err /= Ok then
+         Status := Err;
+         return;
+      end if;
+
+      -- If current charge goes below Lower_Threshold, we execute the action on Cap
+      if Node.Policy.Wallet.all.Charge < Node.Policy.Lower_Threshold then
          Node.Is_Active := False;
          if Node.Policy.Action = Revoke_Permanently then
             Aura.Cap_Node.Free (Node.Cap);
@@ -31,13 +44,22 @@ package body Aura.Proposals.Metabolism is
      (Node   : in out Managed_Cap_Node;
       Status : out Kernel_Error)
    is
+      Err : Kernel_Error;
    begin
-      if Node.Policy.Wallet_Addr = System.Null_Address then
+      if Node.Policy.Wallet = null then
          Status := Invalid_Argument;
          return;
       end if;
 
-      --  Simulate rewarding the synapse wallet on use
+      -- Reward usage by applying positive signal
+      Err := Aura.Synapse.Synapse_Apply_Delta
+        (Node.Policy.Wallet.all, Interfaces.Integer_32 (Node.Policy.Usage_Reward));
+
+      if Err /= Ok then
+         Status := Err;
+         return;
+      end if;
+
       Node.Is_Active := True;
       Status := Ok;
    end Reward_Usage;

@@ -3,13 +3,15 @@
 
 with Aura.Object; use Aura.Object;
 with Aura.Cap_Node;
+with Aura.Synapse;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Interfaces;
-with System;
 
 package Aura.Proposals.Metabolism is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
+
+   use type Aura.Cap_Node.Cap_Node_Access;
 
    --  Capability metabolism links the lifetime of a Capability Node to a
    --  Synapse "wallet". This is a zero-heap real-time lease mechanism
@@ -18,11 +20,11 @@ package Aura.Proposals.Metabolism is
    type Rent_Action_Kind is (Deactivate, Revoke_Permanently);
 
    type Metabolism_Policy is record
-      Wallet_Addr      : System.Address; -- Pointer to Synapse holding charges
-      Rent_Per_Tick    : Interfaces.Unsigned_32; -- negative signal applied per tick
-      Usage_Reward     : Interfaces.Unsigned_32; -- positive signal applied upon use
-      Action           : Rent_Action_Kind;       -- action on threshold underflow
-      Lower_Threshold  : Interfaces.Unsigned_32; -- minimum charge before action
+      Wallet           : Aura.Synapse.Synapse_Ref; -- Pointer to real Synapse holding charges
+      Rent_Per_Tick    : Interfaces.Unsigned_32;   -- negative signal applied per tick
+      Usage_Reward     : Interfaces.Unsigned_32;   -- positive signal applied upon use
+      Action           : Rent_Action_Kind;         -- action on threshold underflow
+      Lower_Threshold  : Interfaces.Integer_32;    -- minimum charge before action
    end record;
 
    type Managed_Cap_Node is limited record

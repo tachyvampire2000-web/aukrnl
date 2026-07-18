@@ -5,6 +5,7 @@ with Aura.Object; use Aura.Object;
 with Aura.Reincarnation;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Interfaces;
+with System;
 
 package Aura.Proposals.Scar_Memory is
 
