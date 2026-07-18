@@ -1,7 +1,11 @@
 --  AURA Kernel — Causal Quarantine Dynamic MAC implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Interfaces;
+
 package body Aura.Proposals.Causal_Quarantine is
+
+   use type Interfaces.Unsigned_64;
 
    procedure Apply_Quarantine
      (Domain     : in out Causal_Quarantine_Domain;

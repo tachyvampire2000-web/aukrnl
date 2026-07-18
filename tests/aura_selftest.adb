@@ -39,6 +39,9 @@ with Aura.Object;
 with Aura.Entropy;
 with Aura.Ring;
 with Aura.Untyped;
+with Aura.Proposals.Metabolism;
+with Aura.Proposals.Scar_Memory;
+with Aura.Proposals.Causal_Quarantine;
 
 procedure Aura_Selftest is
 
@@ -658,6 +661,104 @@ procedure Aura_Selftest is
       Hot_Swap_Respawn (Contract, Tpl'Unchecked_Access, St);
       Check ("reincarnation: hot-swapping respawn template and migrating capabilities succeeds",
              St = Ok and Contract.Respawn_Cap = Tpl'Unchecked_Access and Contract.Restart_Count = 0);
+
+      -- 4. Capability Metabolism Test
+      declare
+         use Aura.Proposals.Metabolism;
+         use type Aura.Cap_Node.Cap_Node_Access;
+
+         Cap : Aura.Cap_Node.Cap_Node_Access;
+         Wallet_Syn : aliased Aura.Synapse.Synapse :=
+           (Header => <>, Charge => 10, Threshold_Hi => 100,
+            Threshold_Lo => (Present => False), Reset_Mode_Field => To_Zero,
+            Decay => (Present => False), Action => (Kind => Reject_If_Saturated_Action),
+            Max_Charge_Cap => 1000, Min_Charge_Cap => -1000, others => <>);
+
+         St : Kernel_Error;
+      begin
+         Aura.Cap_Node.Alloc (Obj_Epoch => 1, Result => Cap, Status => St);
+         Check ("metabolism: cap allocation succeeds", St = Ok and Cap /= null);
+
+         if Cap /= null then
+            declare
+               Node : Managed_Cap_Node := (Header => <>, Cap => Cap,
+                        Policy => (Wallet => Wallet_Syn'Unchecked_Access,
+                                   Rent_Per_Tick => 5,
+                                   Usage_Reward => 8,
+                                   Action => Revoke_Permanently,
+                                   Lower_Threshold => 0),
+                        Is_Active => True);
+            begin
+               -- Under normal rent tick: 10 - 5 = 5 (charge is >= 0 Lower_Threshold, still active)
+               Process_Metabolic_Tick (Node, St);
+               Check ("metabolism: metabolic tick deductions are processed", St = Ok and Node.Is_Active);
+               Check ("metabolism: wallet charge updated correctly", Wallet_Syn.Charge = 5);
+
+               -- Under Usage reward: 5 + 8 = 13
+               Reward_Usage (Node, St);
+               Check ("metabolism: usage rewards feed positive charges", St = Ok and Node.Is_Active);
+               Check ("metabolism: wallet charge rewards processed", Wallet_Syn.Charge = 13);
+
+               -- Drop under Lower_Threshold: rent 15 -> 13 - 15 = -2 < 0. Revokes permanently.
+               Node.Policy.Rent_Per_Tick := 15;
+               Process_Metabolic_Tick (Node, St);
+               Check ("metabolism: threshold underflow deactivates and revokes cap", St = Ok and not Node.Is_Active);
+            end;
+         end if;
+      end;
+
+      -- 5. Memory of Scar Test
+      declare
+         use Aura.Proposals.Scar_Memory;
+         Persistent_Ctx : Persistent_Scar_Context :=
+           (Header => <>, Contract_Addr => System.Null_Address,
+            History => (others => (Reason => Unknown, Fault_Pc => 0, Timestamp => 0)),
+            History_Length => 0, Next_Write_Idx => 1, Repeat_Threshold => 1);
+      begin
+         -- Check initial pattern escalation state
+         Check ("scar_memory: initial history is clean", not Check_Pattern_Escalation (Persistent_Ctx));
+
+         -- Record the first crash at PC 1234
+         Record_Crash_Scar (Persistent_Ctx, Page_Fault, 1234, 100);
+         Check ("scar_memory: crash logged correctly", Persistent_Ctx.History_Length = 1);
+
+         -- Record another crash with different PC (no pattern matching yet)
+         Record_Crash_Scar (Persistent_Ctx, Page_Fault, 5678, 105);
+         Check ("scar_memory: consecutive mismatch does not trigger escalation", not Check_Pattern_Escalation (Persistent_Ctx));
+
+         -- Record crash matching the previous Page_Fault at 5678
+         Record_Crash_Scar (Persistent_Ctx, Page_Fault, 5678, 110);
+         Check ("scar_memory: consecutive identical crash triggers escalation", Check_Pattern_Escalation (Persistent_Ctx));
+      end;
+
+      -- 6. Causal Quarantine Dynamic MAC Test
+      declare
+         use Aura.Proposals.Causal_Quarantine;
+         Parent : Causal_Quarantine_Domain :=
+           (Header => <>, Thread_Id => 10,
+            Label => (Level => Clean, Categories => 0, Valid_Thru => 0),
+            Is_Blocked => False);
+         Child : Causal_Quarantine_Domain :=
+           (Header => <>, Thread_Id => 11,
+            Label => (Level => Clean, Categories => 0, Valid_Thru => 0),
+            Is_Blocked => False);
+      begin
+         -- Initially both clean, write to Low_Risk is authorized
+         Check ("quarantine: initial clean state is write-authorized", Check_Write_Authorized (Parent, Low_Risk, 100));
+
+         -- Quarantine Parent dynamically at High_Risk until tick 1000
+         Apply_Quarantine (Parent, High_Risk, 1, 900, 100);
+         Check ("quarantine: quarantine blocks untrusted state", Parent.Is_Blocked);
+         Check ("quarantine: write-down to Low_Risk blocked under quarantine", not Check_Write_Authorized (Parent, Low_Risk, 100));
+
+         -- Propagate label from Parent to Child
+         Propagate_Quarantine (Parent, Child);
+         Check ("quarantine: label successfully propagated down causal chain", Child.Is_Blocked and Child.Label.Level = High_Risk);
+
+         -- Check that quarantine eventually expires (at tick 1001)
+         Check ("quarantine: authorization restored after quarantine expiration", Check_Write_Authorized (Child, Low_Risk, 1001));
+      end;
+
    end Test_Conceptual_Extensions;
 
    procedure Test_RCU_Epoch is
