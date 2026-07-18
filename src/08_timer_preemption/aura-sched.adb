@@ -1,6 +1,10 @@
 --  AURA — Scheduler (EDF / Earliest Deadline First implementation)
 --  SPDX-License-Identifier: GPL-2.0-only
 
+with Aura.Ring;
+with Aura.Timer;
+with System;
+
 package body Aura.Sched is
 
    use type Interfaces.Unsigned_64;
@@ -8,6 +12,12 @@ package body Aura.Sched is
    use type Aura.Thread.Sched_Ctx_Access;
 
    Boot_Thread : aliased Aura.Thread.Thread;
+   Interrupt_Count : aliased Natural := 0;
+
+   function Interrupt_Dispatched_Count return Natural is
+   begin
+      return Interrupt_Count;
+   end Interrupt_Dispatched_Count;
 
    procedure Sched_Add_Thread (Cpu : Natural; Th : Aura.Thread.Thread_Access) is
    begin
@@ -139,8 +149,38 @@ package body Aura.Sched is
    is
       pragma Unreferenced (Irq);
    begin
-      Interrupt_Thread_Dispatched_Count := Interrupt_Thread_Dispatched_Count + 1;
+      Interrupt_Count := Interrupt_Count + 1;
    end Sched_Trigger_Interrupt_Thread;
+
+   procedure Init_Boot_Thread is
+   begin
+      Boot_Thread.Header.Epoch       := 1;
+      Boot_Thread.Header.Min_Ring    := Aura.Ring.Ring3;
+      Boot_Thread.Header.Rcu_Domain  := null;
+      Boot_Thread.Exec_Ctx           := (Registers    => [others => 0],
+                                         Stack_Ptr    => 0,
+                                         Bound_Vspace => null,
+                                         Fpu_State    => [others => 0]);
+      Boot_Thread.Snapshot_Valid     := False;
+      Boot_Thread.Active_Sched_Ctx   := null;
+      Boot_Thread.Own_Sched_Ctx.Header.Epoch      := 1;
+      Boot_Thread.Own_Sched_Ctx.Header.Min_Ring   := Aura.Ring.Ring3;
+      Boot_Thread.Own_Sched_Ctx.Header.Rcu_Domain := null;
+      Boot_Thread.Own_Sched_Ctx.Budget_Us    := 10_000_000;
+      Boot_Thread.Own_Sched_Ctx.Period_Us    := 10_000_000;
+      Boot_Thread.Own_Sched_Ctx.Remaining_Us := 10_000_000;
+      Boot_Thread.Own_Sched_Ctx.Deadline_Tick := 0;
+      Boot_Thread.Own_Sched_Ctx.Numa_Node    := 0;
+      Boot_Thread.Own_Sched_Ctx.Cpu_Affinity := 1;
+      Boot_Thread.Migration_List_Next := null;
+      Boot_Thread.Fault_Endpoint     := null;
+      Boot_Thread.Last_Syscall_Tick  := 0;
+      Boot_Thread.Ring_Level         := Aura.Ring.Ring0;
+      Boot_Thread.State              := Aura.Thread.Running;
+      Boot_Thread.Taint              := (Tainted => False, Taint_Level => 0, Taint_Categories => 0);
+      Boot_Thread.Active_Sched_Ctx   := Boot_Thread.Own_Sched_Ctx'Access;
+      Run_Queues (0).Current         := Boot_Thread'Access;
+   end Init_Boot_Thread;
 
    procedure Scheduler_Block_Current is
    begin

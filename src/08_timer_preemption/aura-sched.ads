@@ -48,14 +48,14 @@ package Aura.Sched is
      (Caller   : Aura.Thread.Thread_Access;
       Receiver : Aura.Thread.Thread_Access);
 
-   Interrupt_Thread_Dispatched_Count : aliased Natural := 0;
-
    -- Запустить потоковый обработчик прерывания (Interrupt Threading)
    procedure Sched_Trigger_Interrupt_Thread
      (Irq : Interfaces.Unsigned_32);
 
    --  Заблокировать текущий поток до внешнего пробуждения.
    procedure Scheduler_Block_Current;
+
+   function Interrupt_Dispatched_Count return Natural;
 
    --  Заблокировать текущий поток до Deadline (в тиках);
    --  Timeout, если дедлайн истёк раньше пробуждения.
@@ -66,5 +66,7 @@ package Aura.Sched is
    --  Периодическая уборка истёкших временных маунтов (§3 порта);
    --  вызывается с CPU 0 каждые 64 тика.
    procedure Sweep_Expired_Mounts (Now : Interfaces.Unsigned_64);
+
+   procedure Init_Boot_Thread;
 
 end Aura.Sched;

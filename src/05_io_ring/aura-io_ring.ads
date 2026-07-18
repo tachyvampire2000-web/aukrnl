@@ -6,6 +6,7 @@ with Aura.Object; use Aura.Object;
 with Aura.Flip_Cell;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Thread;
+with Aura.Vspace;
 with Ada.Containers.Bounded_Vectors;
 with Interfaces;
 
@@ -154,25 +155,12 @@ package Aura.Io_Ring is
    end record;
 
 
-   --  (декларации из продолжения-фрагмента, doc-lines 3131-3167,
-   --  после первоначального закрытия Aura.Io_Ring — тела того же
-   --  фрагмента вынесены в .adb — см. MANIFEST §Находки)
-   type V_Space is limited record
-      Header            : Object_Header;
-      Page_Table_Root    : Interfaces.Unsigned_64;
-      --  RCU-список потоков, чей Bound_Vspace == этот V_Space на время
-      --  XPC-миграции. Вставка — в Perform_Xpc_Call, удаление — в
-      --  Perform_Xpc_Reply / Force_Xpc_Reply_With_Error.
-      Migrated_Threads   : Thread_Access;
-   end record
-     with Volatile;
-
    --  Object_Destroy для V_Space обязан до освобождения страничных таблиц
    --  безусловно выполнить аварийный XpcReply для каждого потока клиента,
    --  чей Bound_Vspace указывает на уничтожаемый объект — конкретное
    --  воплощение общего правила §1.7.0 порта (правило внешнего физического
    --  эффекта). Переносится без изменений по существу.
 
-   procedure Object_Destroy_Vspace (Victim : in out V_Space);
+   procedure Object_Destroy_Vspace (Victim : in out Aura.Vspace.V_Space);
 
 end Aura.Io_Ring;

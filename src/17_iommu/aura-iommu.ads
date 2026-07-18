@@ -12,8 +12,14 @@ package Aura.Iommu is
 
    pragma SPARK_Mode (Off);
 
-   type Iommu_Mapping is access all Integer; -- Placeholder
    type Iommu_Map_Flags is mod 2 ** 32;
+
+   type Iommu_Mapping is record
+      Iova  : Interfaces.Unsigned_64 := 0;
+      Phys  : Interfaces.Unsigned_64 := 0;
+      Size  : Interfaces.Unsigned_64 := 0;
+      Flags : Iommu_Map_Flags := 0;
+   end record;
 
    type Iommu_Domain;
    type Iommu_Domain_Access is access all Iommu_Domain;
