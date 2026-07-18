@@ -3,6 +3,7 @@
 --  стандартный Object_Header (эпоха, минимальное кольцо, RCU-домен).
 
 with Aura.Object; use Aura.Object;
+with System;
 with Interfaces;
 
 package Aura.Vspace is
@@ -12,6 +13,7 @@ package Aura.Vspace is
    type V_Space is limited record
       Header          : Object_Header;
       Page_Table_Root : Interfaces.Unsigned_64 := 0;
+      Migrated_Threads : System.Address := System.Null_Address;
    end record;
 
    type V_Space_Ref is access all V_Space;

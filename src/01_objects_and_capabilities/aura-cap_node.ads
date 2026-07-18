@@ -3,6 +3,7 @@
 
 with Aura.Rights;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
+with Aura.Notification;
 with Interfaces;
 
 package Aura.Cap_Node is
@@ -11,8 +12,8 @@ package Aura.Cap_Node is
 
    type Cap_Node_Inner;
    type Cap_Node_Access is access all Cap_Node_Inner;
-   type Cap_Node_Weak_Ref is access all Cap_Node_Inner; -- Placeholder
-   type Notification_Weak_Ref is access all Integer; -- Placeholder
+   type Cap_Node_Weak_Ref is access all Cap_Node_Inner;
+   type Notification_Weak_Ref is access all Aura.Notification.Notification_Object;
 
    type Cap_Node_Inner is limited record
       Cap_Epoch          : aliased Interfaces.Unsigned_32;  -- [fix-009] u32

@@ -2,6 +2,8 @@
 --  SPDX-License-Identifier: GPL-2.0-only
 
 
+with System;
+with Ada.Unchecked_Conversion;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Ada.Unchecked_Deallocation;
 with Aura.Sched;
@@ -17,17 +19,20 @@ package body Aura.Io_Ring is
       Aura.Sched.Sched_Add_Thread (0, T'Unrestricted_Access);
    end Force_Xpc_Reply_With_Error;
 
-   procedure Object_Destroy_Vspace (Victim : in out V_Space)
+   procedure Object_Destroy_Vspace (Victim : in out Aura.Vspace.V_Space)
    is
-      Ptr    : Thread_Access := Victim.Migrated_Threads;
-      Thread : Thread_Access;
+      use type System.Address;
+      function To_Thread is new Ada.Unchecked_Conversion (System.Address, Aura.Thread.Thread_Access);
+      function To_Address is new Ada.Unchecked_Conversion (Aura.Thread.Thread_Access, System.Address);
+      Ptr    : System.Address := Victim.Migrated_Threads;
+      Thread : Aura.Thread.Thread_Access;
    begin
-      while Ptr /= null loop
-         Thread := Ptr;
+      while Ptr /= System.Null_Address loop
+         Thread := To_Thread (Ptr);
          Force_Xpc_Reply_With_Error (Thread.all, Host_Vspace_Destroyed);
-         Ptr := Thread_Access (Thread.Migration_List_Next);
+         Ptr := To_Address (Thread.all.Migration_List_Next);
       end loop;
-      Victim.Migrated_Threads := null;
+      Victim.Migrated_Threads := System.Null_Address;
    end Object_Destroy_Vspace;
 
    procedure Execute_Step (Step : Io_Ring_Sqe_Inner; Res : out Io_Batch_Result_Step) is

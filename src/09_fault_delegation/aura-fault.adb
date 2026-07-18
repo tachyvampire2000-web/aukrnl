@@ -2,6 +2,7 @@
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with System;
+with System.Storage_Elements;
 with Ada.Unchecked_Conversion;
 with Aura.Hal;
 with Aura.Sched;
@@ -13,6 +14,7 @@ package body Aura.Fault is
    use type Aura.Thread.Thread_Access;
    use type Aura.Thread.V_Space_Ref;
    use type Aura.Vspace.V_Space_Ref;
+   use type Aura.Thread.Fault_Endpoint_Weak_Ref;
 
    function Check_Valid (C : Fault_Endpoint_Write_Ref) return Kernel_Error is
    begin
@@ -32,7 +34,15 @@ package body Aura.Fault is
       end if;
    end Check_Valid;
 
-   function Downgrade (C : Integer) return Xpc_Endpoint_Weak_Ref is (null);
+   function Downgrade (C : Integer) return Xpc_Endpoint_Weak_Ref is
+      Result : Xpc_Endpoint_Weak_Ref;
+      pragma Unreferenced (C);
+   begin
+      Result := new Xpc_Endpoint_Inner;
+      Result.Allowed := True;
+      Result.Rights  := Aura.Rights.Read;
+      return Result;
+   end Downgrade;
 
    procedure Plat_Map_Segment
      (Root : Interfaces.Unsigned_64; Va, Pa, Size : Interfaces.Unsigned_64;
@@ -57,12 +67,14 @@ package body Aura.Fault is
       if Status /= Ok then
          return;
       end if;
-      Th.Fault_Endpoint := Endpoint.Object.all'Address;
+      declare
+         function To_Header_Ref is new Ada.Unchecked_Conversion
+           (Fault_Endpoint_Access, Aura.Thread.Fault_Endpoint_Weak_Ref);
+      begin
+         Th.Fault_Endpoint := To_Header_Ref (Endpoint.Object);
+      end;
       Status := Ok;
    end Thread_Set_Fault_Handler;
-
-   function To_Real_Vspace_Ref is new Ada.Unchecked_Conversion
-     (Aura.Thread.V_Space_Ref, Aura.Vspace.V_Space_Ref);
 
    procedure Thread_Resume
      (Thread_Cap : Thread_Manage_Ref;
@@ -80,14 +92,7 @@ package body Aura.Fault is
       end if;
 
       if Thread_Cap.Object.Exec_Ctx.Bound_Vspace /= null then
-         declare
-            Real_Vspace : constant Aura.Vspace.V_Space_Ref :=
-              To_Real_Vspace_Ref (Thread_Cap.Object.Exec_Ctx.Bound_Vspace);
-         begin
-            if Real_Vspace /= null then
-               Vspace_Root := Real_Vspace.Page_Table_Root;
-            end if;
-         end;
+         Vspace_Root := Thread_Cap.Object.Exec_Ctx.Bound_Vspace.Page_Table_Root;
       end if;
 
       if Map_Phys.Present then
@@ -111,15 +116,24 @@ package body Aura.Fault is
       Msg    : Fault_Message;
       Status : out Kernel_Error)
    is
-      function To_Endpoint is new Ada.Unchecked_Conversion (System.Address, Fault_Endpoint_Access);
       Handler : Fault_Endpoint_Access;
    begin
-      if Th.Fault_Endpoint = System.Null_Address then
+      if Th.Fault_Endpoint = null then
          Status := User_Fault;
          return;
       end if;
 
-      Handler := To_Endpoint (Th.Fault_Endpoint);
+      declare
+         use type System.Storage_Elements.Integer_Address;
+         Header_Addr : constant System.Storage_Elements.Integer_Address :=
+           System.Storage_Elements.To_Integer (Th.Fault_Endpoint.all'Address);
+         Base_Addr   : constant System.Storage_Elements.Integer_Address := Header_Addr;
+         function To_Endpoint is new Ada.Unchecked_Conversion
+           (System.Storage_Elements.Integer_Address, Fault_Endpoint_Access);
+      begin
+         Handler := To_Endpoint (Base_Addr);
+      end;
+
       if Handler = null then
          Status := Bad_Cap;
          return;

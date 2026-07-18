@@ -5,6 +5,7 @@
 with Aura.Object; use Aura.Object;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
 with Aura.Slot_Map;
+with Aura.Attr;
 with Ada.Strings.Bounded;
 with Interfaces;
 
@@ -16,7 +17,6 @@ package Aura.Namespace is
    type Namespace_Node_Inner;
    type Namespace_Node_Access is access all Namespace_Node_Inner;
    type Namespace_Node_Weak_Ref is access all Namespace_Node_Inner; -- Placeholder
-   type Attr_Table is access all Integer; -- Placeholder
 
    type P_Union_Ref is access all Integer; -- Placeholder
    type Device_Object_Ref is access all Integer; -- Placeholder
@@ -40,7 +40,7 @@ package Aura.Namespace is
       Union_Target    : Namespace_Node_Access; --  A_Union (AUFS-подобное объединение слоев Im)
       Union_Priority  : Interfaces.Unsigned_32;
       Is_Union        : Boolean;
-      Attributes      : Attr_Table;
+      Attributes      : Aura.Attr.Radix_Node_Ref;
       Name            : Name_Strings.Bounded_String;
       -- MAC Mandatory Label fields
       Mac_Level      : Interfaces.Unsigned_8 := 0;

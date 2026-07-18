@@ -12,6 +12,7 @@ with Interfaces;
 with Ada.Strings.Bounded;
 
 with Aura.Vspace;
+with Aura.Notification;
 
 package Aura.Driver is
 
@@ -44,7 +45,7 @@ package Aura.Driver is
       end case;
    end record;
 
-   type Notification_Read_Ref is access all Integer; -- Placeholder
+   type Notification_Read_Ref is access all Aura.Notification.Notification_Object;
    type Untyped_Region_Ref is access all Integer; -- Placeholder
    type Timer_Object_Read_Ref is access all Integer; -- Placeholder
 

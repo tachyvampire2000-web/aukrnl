@@ -15,7 +15,12 @@ package Aura.Fault is
    pragma SPARK_Mode (Off);
 
    subtype Process_Context_Weak_Ref is Aura.Vspace.Process_Context_Weak_Ref;
-   type Xpc_Endpoint_Weak_Ref is access all Integer; -- Placeholder
+
+   type Xpc_Endpoint_Inner is limited record
+      Allowed : Boolean := False;
+      Rights  : Aura.Rights.Mask := 0;
+   end record;
+   type Xpc_Endpoint_Weak_Ref is access all Xpc_Endpoint_Inner;
 
    subtype Thread is Aura.Thread.Thread;
 

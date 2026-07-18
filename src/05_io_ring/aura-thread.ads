@@ -6,6 +6,7 @@ with Aura.Object; use Aura.Object;
 with Aura.Flip_Cell;
 with Aura.Ring;
 with Aura.Mac;
+with Aura.Vspace;
 with System.Storage_Elements;
 with Interfaces;
 
@@ -15,8 +16,8 @@ package Aura.Thread is
 
    type Register_File is array (1 .. 16) of Interfaces.Unsigned_64;
    type Fpu_State_Area is array (1 .. 512) of Interfaces.Unsigned_8;
-   type V_Space_Ref is access all Integer; -- Placeholder
-   type V_Space_Weak_Ref is access all Integer; -- Placeholder
+   type V_Space_Ref is access all Aura.Vspace.V_Space;
+   type V_Space_Weak_Ref is access all Aura.Vspace.V_Space;
    type Sched_Ctx is limited record
       Header       : Object_Header;
       Budget_Us    : Interfaces.Unsigned_64;
@@ -29,10 +30,10 @@ package Aura.Thread is
      with Volatile;
 
    type Sched_Ctx_Access is access all Sched_Ctx;
+   subtype Sched_Ctx_Manage_Ref is Sched_Ctx_Access;
    type Thread;
    type Thread_Access is access all Thread;
-   subtype Fault_Endpoint_Weak_Ref is System.Address;
-   type Sched_Ctx_Manage_Ref is access all Integer; -- Placeholder
+   type Fault_Endpoint_Weak_Ref is access all Aura.Object.Object_Header;
 
    type Execution_Context is record
       Registers    : Register_File;
@@ -91,6 +92,9 @@ package Aura.Thread is
    procedure Sched_Ctx_Create
      (Budget_Us, Period_Us : Interfaces.Unsigned_64;
       Result : out Sched_Ctx_Manage_Ref);
+
+   procedure Sched_Ctx_Destroy
+     (Ctx : in out Sched_Ctx_Manage_Ref);
 
    --  T60: зачистка обеих сторон снимка при уничтожении потока.
 

@@ -683,7 +683,7 @@ procedure Aura_Selftest is
       Msg : Fault_Message := (Kind => 1, Fault_Addr => 0, Pc => 0, Thread_Id => 1);
       St : Kernel_Error;
    begin
-      Th.Fault_Endpoint := System.Null_Address;
+      Th.Fault_Endpoint := null;
       Dispatch_Fault_To_Userspace (Th, Msg, St);
       Check ("fault: dispatching with no handler fails with User_Fault", St = User_Fault);
 
@@ -719,9 +719,8 @@ procedure Aura_Selftest is
    procedure Test_Interrupt_Threading is
       use Aura.Sched;
    begin
-      Interrupt_Thread_Dispatched_Count := 0;
       Sched_Trigger_Interrupt_Thread (1);
-      Check ("sched: interrupt threading increments dispatch count", Interrupt_Thread_Dispatched_Count = 1);
+      Check ("sched: interrupt threading increments dispatch count", Interrupt_Dispatched_Count = 1);
    end Test_Interrupt_Threading;
 
    procedure Test_New_Enhancements is
@@ -1330,27 +1329,29 @@ procedure Aura_Selftest is
 
       -- 10. Test RCU XPC Error Reply Force
       declare
+         use type System.Address;
          use type Aura.Thread.Thread_State;
-         use type Aura.Io_Ring.Thread_Access;
+         use type Aura.Thread.Thread_Access;
 
-         Victim_Vspace : aliased Aura.Io_Ring.V_Space;
+         Victim_Vspace : aliased Aura.Vspace.V_Space;
          T_Migrated : aliased Aura.Thread.Thread;
       begin
          T_Migrated.State := Aura.Thread.Blocked;
          T_Migrated.Migration_List_Next := null;
 
          -- Add to migrated list
-         Victim_Vspace.Migrated_Threads := T_Migrated'Unchecked_Access;
+         Victim_Vspace.Migrated_Threads := T_Migrated'Address;
 
          -- Destroy Vspace, which must resume the migrated thread
          Aura.Io_Ring.Object_Destroy_Vspace (Victim_Vspace);
 
          Check ("io_ring: destroyed vspace resumed migrated thread", T_Migrated.State = Aura.Thread.Ready);
-         Check ("io_ring: migrated threads list cleared", Victim_Vspace.Migrated_Threads = null);
+         Check ("io_ring: migrated threads list cleared", Victim_Vspace.Migrated_Threads = System.Null_Address);
       end;
    end Test_Real_Subsystems;
 
 begin
+   Aura.Sched.Init_Boot_Thread;
    Test_Rights;
    Test_Wait_Queue;
    Test_Notification;
