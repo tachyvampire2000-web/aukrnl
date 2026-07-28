@@ -10,6 +10,25 @@ package body Aura.Reincarnation is
    use type System.Address;
    use type Aura.Vspace.Process_Context_Ref;
 
+   protected Reincarnation_Lock is
+      entry Acquire;
+      procedure Release;
+   private
+      Locked : Boolean := False;
+   end Reincarnation_Lock;
+
+   protected body Reincarnation_Lock is
+      entry Acquire when not Locked is
+      begin
+         Locked := True;
+      end Acquire;
+
+      procedure Release is
+      begin
+         Locked := False;
+      end Release;
+   end Reincarnation_Lock;
+
    procedure Kill_Process (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref) is
       pragma Unreferenced (Respawn_Cap);
    begin
@@ -119,12 +138,51 @@ package body Aura.Reincarnation is
       use type Interfaces.Unsigned_64;
       New_Ctx : Process_Context_Ref;
    begin
-      if Now - Contract.Last_Heartbeat_Tick
-           > Interfaces.Unsigned_64 (Contract.Heartbeat_Timeout_Ms)
-      then
+      Reincarnation_Lock.Acquire;
+      begin
+         if Now - Contract.Last_Heartbeat_Tick
+              > Interfaces.Unsigned_64 (Contract.Heartbeat_Timeout_Ms)
+         then
+            if Contract.Restart_Count >= Contract.Max_Restarts then
+               Contract_Escalation (Contract);
+               Apply_Restart_Strategy (Contract, Forced => True);
+               Reincarnation_Lock.Release;
+               return;
+            end if;
+
+            Kill_Process (Contract.Supervised, Contract.Respawn_Cap);
+            Respawn_From_Template
+              (Contract.Supervised, Contract.Respawn_Cap, New_Ctx);
+            Rebind_Namespace_Mounts (New_Ctx, Contract);
+            Contract.Supervised := New_Ctx;
+            Contract.Restart_Count := Contract.Restart_Count + 1;
+            Contract.Last_Heartbeat_Tick := Now;
+
+            if Contract.Associated_Watchdog /= System.Null_Address then
+               Aura.Watchdog.Reset_Watchdog_Heartbeat (Contract.Associated_Watchdog);
+            end if;
+
+            Apply_Restart_Strategy (Contract, Forced => False);
+         end if;
+         Reincarnation_Lock.Release;
+      exception
+         when others =>
+            Reincarnation_Lock.Release;
+            raise;
+      end;
+   end Supervisor_Tick;
+
+   procedure Watchdog_Trigger_Restart
+     (Contract : aliased in out Reincarnation_Contract; Now : Interfaces.Unsigned_64)
+   is
+      New_Ctx : Process_Context_Ref;
+   begin
+      Reincarnation_Lock.Acquire;
+      begin
          if Contract.Restart_Count >= Contract.Max_Restarts then
             Contract_Escalation (Contract);
             Apply_Restart_Strategy (Contract, Forced => True);
+            Reincarnation_Lock.Release;
             return;
          end if;
 
@@ -135,9 +193,19 @@ package body Aura.Reincarnation is
          Contract.Supervised := New_Ctx;
          Contract.Restart_Count := Contract.Restart_Count + 1;
          Contract.Last_Heartbeat_Tick := Now;
+
+         if Contract.Associated_Watchdog /= System.Null_Address then
+            Aura.Watchdog.Reset_Watchdog_Heartbeat (Contract.Associated_Watchdog);
+         end if;
+
          Apply_Restart_Strategy (Contract, Forced => False);
-      end if;
-   end Supervisor_Tick;
+         Reincarnation_Lock.Release;
+      exception
+         when others =>
+            Reincarnation_Lock.Release;
+            raise;
+      end;
+   end Watchdog_Trigger_Restart;
 
    procedure Hot_Swap_Respawn
      (Contract     : aliased in out Reincarnation_Contract;
@@ -146,28 +214,37 @@ package body Aura.Reincarnation is
    is
       New_Ctx : Process_Context_Ref;
    begin
-      if New_Template = null then
-         Status := Invalid_Argument;
-         return;
-      end if;
+      Reincarnation_Lock.Acquire;
+      begin
+         if New_Template = null then
+            Status := Invalid_Argument;
+            Reincarnation_Lock.Release;
+            return;
+         end if;
 
-      -- 1. Update Respawn template to the new version
-      Contract.Respawn_Cap := New_Template;
+         -- 1. Update Respawn template to the new version
+         Contract.Respawn_Cap := New_Template;
 
-      -- 2. Terminate the old process context gracefully
-      Kill_Process (Contract.Supervised, New_Template);
+         -- 2. Terminate the old process context gracefully
+         Kill_Process (Contract.Supervised, New_Template);
 
-      -- 3. Respawn the new version context from the new template cap
-      Respawn_From_Template (Contract.Supervised, New_Template, New_Ctx);
+         -- 3. Respawn the new version context from the new template cap
+         Respawn_From_Template (Contract.Supervised, New_Template, New_Ctx);
 
-      -- 4. Rebind all namespace mounts and migrate capabilities to the new context
-      Rebind_Namespace_Mounts (New_Ctx, Contract);
+         -- 4. Rebind all namespace mounts and migrate capabilities to the new context
+         Rebind_Namespace_Mounts (New_Ctx, Contract);
 
-      -- 5. Update supervised context, reset restart counters for the new component
-      Contract.Supervised := New_Ctx;
-      Contract.Restart_Count := 0;
+         -- 5. Update supervised context, reset restart counters for the new component
+         Contract.Supervised := New_Ctx;
+         Contract.Restart_Count := 0;
 
-      Status := Ok;
+         Status := Ok;
+         Reincarnation_Lock.Release;
+      exception
+         when others =>
+            Reincarnation_Lock.Release;
+            raise;
+      end;
    end Hot_Swap_Respawn;
 
 end Aura.Reincarnation;

@@ -203,6 +203,7 @@ package body Aura.Cap_Node is
       Stack : Node_Vectors.Vector (Max_Cap_Nodes);
       Node  : Cap_Node_Access;
       Child : Cap_Node_Access;
+      Success : Boolean;
    begin
       if Root = null then
          Status := Invalid_Argument;
@@ -248,7 +249,11 @@ package body Aura.Cap_Node is
             end if;
 
             -- Retire the node slot instead of immediate Free under EBR
-            Retire (Node);
+            Retire (Node, Success);
+            if not Success then
+               Status := Capacity_Exceeded;
+               return;
+            end if;
          end if;
       end loop;
 
@@ -265,8 +270,7 @@ package body Aura.Cap_Node is
       Cap_Pool_Manager.Leave_Critical_Section (Cpu);
    end Leave_Critical_Section;
 
-   procedure Retire (Node : Cap_Node_Access) is
-      Success : Boolean;
+   procedure Retire (Node : Cap_Node_Access; Success : out Boolean) is
    begin
       Cap_Pool_Manager.Retire_Node (Node, Success);
    end Retire;

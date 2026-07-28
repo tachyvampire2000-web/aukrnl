@@ -73,6 +73,9 @@ package Aura.Reincarnation is
    procedure Supervisor_Tick
      (Contract : aliased in out Reincarnation_Contract; Now : Interfaces.Unsigned_64);
 
+   procedure Watchdog_Trigger_Restart
+     (Contract : aliased in out Reincarnation_Contract; Now : Interfaces.Unsigned_64);
+
    procedure Kill_Process (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref);
    procedure Respawn_From_Template
      (Proc : Process_Context_Ref; Respawn_Cap : Cap_Any_Ref; New_Ctx : out Process_Context_Ref);

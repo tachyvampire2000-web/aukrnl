@@ -63,6 +63,6 @@ package Aura.Cap_Node is
    procedure Enter_Critical_Section (Cpu : Natural);
    procedure Leave_Critical_Section (Cpu : Natural);
    procedure Advance_Epoch_And_Reclaim;
-   procedure Retire (Node : Cap_Node_Access);
+   procedure Retire (Node : Cap_Node_Access; Success : out Boolean);
 
 end Aura.Cap_Node;

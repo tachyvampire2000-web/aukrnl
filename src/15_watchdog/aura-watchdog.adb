@@ -5,6 +5,7 @@
 with Aura.Sched;
 with Aura.Timer;
 with Aura.Synapse;
+with Aura.Reincarnation;
 
 package body Aura.Watchdog is
 
@@ -231,29 +232,9 @@ package body Aura.Watchdog is
             --  уведомление без перезапуска, чем попытка перезапустить
             --  процесс, для которого у Watchdog нет
             --  Reincarnation_Contract.
-            --
-            --  OPEN (перенесено дословно из Rust-версии, todo!() в
-            --  apply_watchdog_policy, §15): Supervisor_Tick принимает
-            --  "in out" Reincarnation_Contract, и нигде в §16 порта не
-            --  специфицирован способ синхронизации доступа — обычный
-            --  supervisor явно владеет эксклюзивным доступом, а здесь
-            --  Watchdog_Tick (другой, асинхронный по отношению к
-            --  supervisor вызыватель) тоже хочет вызвать ту же функцию.
-            --  Это настоящая гонка данных, если оба пути сработают на
-            --  одном контракте одновременно, и спецификация
-            --  синхронизации Reincarnation_Contract — отдельный
-            --  нерешённый вопрос, выходящий за рамки T82 (см. дорожную
-            --  карту: следует завести отдельный тикет на per-contract
-            --  lock, а не решать его здесь неявно). Порт НЕ придумывает
-            --  решение этой гонки от себя — она перенесена как открытая,
-            --  ровно как в Rust-версии.
             Upgrade (Wd.Contract, Contract_Ref, Contract_Alive);
             if Contract_Alive then
-               raise Program_Error with
-                 "OPEN: требует решения по синхронизации " &
-                 "Reincarnation_Contract — см. комментарий выше " &
-                 "(перенесено из todo!() Rust-версии, не разрешено " &
-                 "и здесь)";
+               Aura.Reincarnation.Watchdog_Trigger_Restart (Contract_Ref.all, Aura.Timer.Current_Tick);
             end if;
          when Freeze =>
             --  Переиспользует уже существующее состояние Suspended (T57,
@@ -272,6 +253,7 @@ package body Aura.Watchdog is
       Last          : Interfaces.Unsigned_64;
    begin
       Watchdogs.Lock (Reg);
+      Watchdogs.Unlock (Reg); -- Release global lock immediately after copying snapshot
       for I in 1 .. Natural (Watchdog_Vectors.Length (Reg)) loop
          declare
             Wd : constant Watchdog_Ref := Watchdog_Vectors.Element (Reg, I);
@@ -292,7 +274,6 @@ package body Aura.Watchdog is
             end if;
          end;
       end loop;
-      Watchdogs.Unlock (Reg);
    end Watchdog_Tick;
 
    procedure Reset_Watchdog_Heartbeat (Wd_Addr : System.Address) is
