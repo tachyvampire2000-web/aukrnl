@@ -14,6 +14,47 @@ package body Aura.Sched is
    Boot_Thread : aliased Aura.Thread.Thread;
    Interrupt_Count : aliased Natural := 0;
 
+   type Wakeup_Entry is record
+      Thread   : Aura.Thread.Thread_Access := null;
+      Deadline : Interfaces.Unsigned_64 := 0;
+      Active   : Boolean := False;
+   end record;
+
+   Wakeups_List : array (1 .. 16) of Wakeup_Entry := [others => <>];
+
+   procedure Process_Wakeups (Now : Interfaces.Unsigned_64) is
+      use type Aura.Thread.Thread_State;
+   begin
+      for I in 1 .. 16 loop
+         if Wakeups_List (I).Active and then Now >= Wakeups_List (I).Deadline then
+            if Wakeups_List (I).Thread /= null then
+               if Wakeups_List (I).Thread.State = Aura.Thread.Blocked then
+                  Wakeups_List (I).Thread.State := Aura.Thread.Ready;
+                  -- Add thread back to CPU 0 run queue
+                  if Run_Queues (0).Ready_Count < Max_Sched_Threads then
+                     -- Check for duplicates
+                     declare
+                        Duplicate : Boolean := False;
+                     begin
+                        for J in 1 .. Run_Queues (0).Ready_Count loop
+                           if Run_Queues (0).Ready_Threads (J) = Wakeups_List (I).Thread then
+                              Duplicate := True;
+                              exit;
+                           end if;
+                        end loop;
+                        if not Duplicate then
+                           Run_Queues (0).Ready_Count := Run_Queues (0).Ready_Count + 1;
+                           Run_Queues (0).Ready_Threads (Run_Queues (0).Ready_Count) := Wakeups_List (I).Thread;
+                        end if;
+                     end;
+                  end if;
+               end if;
+            end if;
+            Wakeups_List (I) := (Thread => null, Deadline => 0, Active => False);
+         end if;
+      end loop;
+   end Process_Wakeups;
+
    function Interrupt_Dispatched_Count return Natural is
    begin
       return Interrupt_Count;
@@ -41,6 +82,9 @@ package body Aura.Sched is
    is
       Tick_Duration_Us : constant := 1000;
    begin
+      -- Process any pending thread wakeups whose deadlines have expired
+      Process_Wakeups (Now);
+
       Self.Tick_Count := Self.Tick_Count + 1;
 
       -- Apply CBS budget decrement to current running thread
@@ -183,18 +227,55 @@ package body Aura.Sched is
    end Init_Boot_Thread;
 
    procedure Scheduler_Block_Current is
+      use type Aura.Thread.Thread_State;
+      Cpu : constant Natural := Aura.Hal.Current_Cpu_Id;
+      Current : constant Aura.Thread.Thread_Access := Run_Queues (Cpu).Current;
    begin
-      Aura.Hal.Spin_Loop_Hint;
+      if Current /= null and then Current /= Boot_Thread'Access then
+         Current.State := Aura.Thread.Blocked;
+      end if;
+      -- Force context switch to next ready thread
+      Schedule (Cpu, Aura.Timer.Current_Tick);
    end Scheduler_Block_Current;
 
    procedure Scheduler_Block_Until
      (Deadline : Interfaces.Unsigned_64;
       Status   : out Kernel_Error)
    is
-      pragma Unreferenced (Deadline);
+      use type Aura.Thread.Thread_State;
+      Cpu : constant Natural := Aura.Hal.Current_Cpu_Id;
+      Current : constant Aura.Thread.Thread_Access := Run_Queues (Cpu).Current;
    begin
-      Aura.Hal.Spin_Loop_Hint;
-      Status := Timeout;
+      if Current /= null and then Current /= Boot_Thread'Access then
+         -- Register the deadline wakeup
+         declare
+            Registered : Boolean := False;
+         begin
+            for I in 1 .. 16 loop
+               if not Wakeups_List (I).Active then
+                  Wakeups_List (I) := (Thread => Current, Deadline => Deadline, Active => True);
+                  Registered := True;
+                  exit;
+               end if;
+            end loop;
+            if not Registered then
+               Status := Out_Of_Memory;
+               return;
+            end if;
+         end;
+
+         Current.State := Aura.Thread.Blocked;
+      end if;
+
+      -- Force context switch to next ready thread
+      Schedule (Cpu, Aura.Timer.Current_Tick);
+
+      -- Check if we timed out
+      if Aura.Timer.Current_Tick >= Deadline then
+         Status := Timeout;
+      else
+         Status := Ok;
+      end if;
    end Scheduler_Block_Until;
 
    procedure Sweep_Expired_Mounts (Now : Interfaces.Unsigned_64) is

@@ -1078,6 +1078,84 @@ procedure Aura_Selftest is
              True);
    end Test_Timers_List_Synchronization;
 
+   procedure Test_Real_Thread_Blocking is
+      use Aura.Wait_Queue;
+      use Aura.Thread;
+      use Aura.Sched;
+
+      Q : Instance;
+      St : Kernel_Error;
+      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+   begin
+      -- Set Th as the running thread on CPU 0
+      Run_Queues (0).Current := Th'Unchecked_Access;
+      Sched_Add_Thread (0, Th'Unchecked_Access);
+
+      -- Block the thread via Wait_Queue Prepare + Scheduler_Block_Current
+      Prepare (Q, St);
+      Check ("wait_queue: prepare ok", St = Ok);
+
+      Scheduler_Block_Current;
+      Check ("sched: blocking transitions thread state to Blocked", Th.State = Blocked);
+
+      -- Wake thread via Wake_All_With_Signal
+      Wake_All_With_Signal (Q);
+      Check ("sched: wake transitions thread state back to Ready", Th.State = Ready);
+   end Test_Real_Thread_Blocking;
+
+   procedure Test_Wait_Queue_Selective_Wakeup is
+      use Aura.Wait_Queue;
+      use Aura.Thread;
+      use Aura.Sched;
+
+      Q : Instance;
+      St : Kernel_Error;
+      Th1 : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+      Th2 : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+   begin
+      -- Prepare Th1 with Token 100
+      Run_Queues (0).Current := Th1'Unchecked_Access;
+      Prepare_With_Token (Q, (Id => 100), St);
+      Th1.State := Blocked;
+
+      -- Prepare Th2 with Token 200
+      Run_Queues (0).Current := Th2'Unchecked_Access;
+      Prepare_With_Token (Q, (Id => 200), St);
+      Th2.State := Blocked;
+
+      -- Wake with Token 100
+      Wake_With_Token (Q, (Id => 100));
+      Check ("wait_queue: selective wakeup wakes only thread with matching token",
+             Th1.State = Ready and Th2.State = Blocked);
+
+      -- Wake with Token 200
+      Wake_With_Token (Q, (Id => 200));
+      Check ("wait_queue: second selective wakeup wakes the remaining thread",
+             Th2.State = Ready);
+   end Test_Wait_Queue_Selective_Wakeup;
+
+   procedure Test_Scheduler_Block_Until is
+      use Aura.Sched;
+      use Aura.Thread;
+      use type Interfaces.Unsigned_64;
+
+      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+      St : Kernel_Error;
+   begin
+      Run_Queues (0).Current := Th'Unchecked_Access;
+
+      -- Block current thread until global tick + 5
+      Scheduler_Block_Until (Aura.Timer.Current_Tick + 5, St);
+      Check ("sched: block_until transitions current thread to Blocked", Th.State = Blocked);
+
+      -- Simulate ticks passing
+      for I in 1 .. 6 loop
+         Aura.Timer.Timer_Interrupt_Handler;
+      end loop;
+
+      Check ("sched: blocked thread woke up after deadline expired", Th.State = Ready);
+   end Test_Scheduler_Block_Until;
+
    procedure Test_Interrupt_Threading is
       use Aura.Sched;
    begin
@@ -1745,6 +1823,9 @@ begin
    Test_Retired_Pool_Overflow;
    Test_Atomic_CAS_And_Tick;
    Test_Timers_List_Synchronization;
+   Test_Real_Thread_Blocking;
+   Test_Wait_Queue_Selective_Wakeup;
+   Test_Scheduler_Block_Until;
    Test_Interrupt_Threading;
    Test_New_Enhancements;
    Test_Real_Subsystems;

@@ -7,6 +7,7 @@
 
 with Interfaces;
 with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
+with System;
 
 package Aura.Wait_Queue is
 
@@ -18,9 +19,18 @@ package Aura.Wait_Queue is
       Id : Interfaces.Unsigned_64 := 0;
    end record;
 
+   type Waiter_Entry is record
+      Thread_Addr : System.Address := System.Null_Address;
+      Token       : Wait_Token;
+      Active      : Boolean := False;
+   end record;
+
+   type Waiter_Array is array (1 .. Wait_Queue_Max_Waiters) of Waiter_Entry;
+
    type Instance is tagged record
-      Waiters : aliased Natural := 0;
-      Signal  : aliased Interfaces.Unsigned_64 := 0;
+      Waiters      : aliased Natural := 0;
+      Signal       : aliased Interfaces.Unsigned_64 := 0;
+      Waiters_List : Waiter_Array := [others => <>];
    end record;
 
    --  Зарегистрироваться как waiter. Max_Waiters при переполнении.
@@ -40,5 +50,8 @@ package Aura.Wait_Queue is
 
    --  Разбудить всех ожидающих, выставив сигнал.
    procedure Wake_All_With_Signal (Self : in out Instance);
+
+   --  Разбудить ожидающих с совпадающим токеном.
+   procedure Wake_With_Token (Self : in out Instance; Token : Wait_Token);
 
 end Aura.Wait_Queue;
