@@ -289,6 +289,7 @@ procedure Aura_Selftest is
       Check ("cap_node: alloc succeeds", St = Ok and Node /= null);
       if Node /= null then
          Check ("cap_node: epoch set correctly", Node.Obj_Creation_Epoch = 555);
+         Free (Node);
       end if;
    end Test_Cap_Node_Alloc;
 
@@ -815,7 +816,205 @@ procedure Aura_Selftest is
       -- Trigger tick, Th has Last_Syscall_Tick = 0 and Now = 10 (diff 10 > period 5)
       Watchdog_Tick (10);
       Check ("watchdog: NMI Hung task detector triggers on expired thread", Nmi_Watchdog_Alarm_Triggered);
+
+      -- Clean up watchdog vector to prevent stale stack pointers
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Clear (Reg);
+      Watchdogs.Unlock (Reg);
    end Test_NMI_Watchdog;
+
+   procedure Test_Watchdog_Kill_And_Respawn is
+      use Aura.Watchdog;
+      use Aura.Thread;
+      use Aura.Reincarnation;
+      use type Interfaces.Unsigned_32;
+
+      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+      PC : aliased Process_Context_Ref := new Aura.Vspace.Process_Context'(Vspace => new Aura.Vspace.V_Space);
+      Contract : aliased Reincarnation_Contract :=
+        (Header                  => <>,
+         Supervised              => PC,
+         Supervisor              => null,
+         Heartbeat_Timeout_Ms    => 10,
+         Last_Heartbeat_Tick     => 0,
+         Respawn_Cap             => null,
+         Restart_Count           => 0,
+         Max_Restarts            => 3,
+         Escalation_Policy_Field => Notify_Supervisor,
+         Mount_Log_Write_Cap     => null,
+         Mount_Log_Phys_Base     => 0,
+         Mount_Log_Capacity      => 0,
+         Free_Slot_Bitmap        => 0,
+         Max_Mounts              => 10,
+         Mounts_Since_Prune      => 0,
+         Restart_Strategy_Field  => One_For_One,
+         Group_Head              => (Present => False),
+         Next_In_Group           => null,
+         Sibling_Order           => 0,
+         Associated_Watchdog     => System.Null_Address);
+
+      Wd : aliased Watchdog :=
+        (Header     => <>,
+         Watched    => Downgrade (Th'Unchecked_Access),
+         Period     => 5,
+         Notify_Ref => (Target => null, Expected_Epoch => 0),
+         Policy     => Kill_And_Respawn,
+         Contract   => Downgrade (Contract'Unchecked_Access));
+
+      Reg : Watchdog_Vector;
+   begin
+      Contract.Associated_Watchdog := Wd'Address;
+      Nmi_Watchdog_Alarm_Triggered := False;
+
+      -- Lock, append and unlock watchdog
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Append (Reg, Wd'Unchecked_Access);
+      Watchdogs.Unlock (Reg);
+
+      -- Trigger watchdog tick
+      Watchdog_Tick (10);
+
+      Check ("watchdog: Kill_And_Respawn successfully triggered Watchdog_Trigger_Restart",
+             Contract.Restart_Count = 1);
+      Check ("watchdog: restart reset Last_Syscall_Tick on thread",
+             Th.Last_Syscall_Tick /= 0);
+
+      -- Clean up watchdog vector
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Clear (Reg);
+      Watchdogs.Unlock (Reg);
+   end Test_Watchdog_Kill_And_Respawn;
+
+   procedure Test_Watchdog_Concurrency is
+      use Aura.Watchdog;
+      use Aura.Thread;
+      use Aura.Reincarnation;
+
+      Th : aliased Aura.Thread.Thread := (Header => <>, Exec_Ctx => <>, Exec_Snapshot => <>, Snapshot_Valid => <>, Active_Sched_Ctx => null, Own_Sched_Ctx => <>, Migration_List_Next => <>, Fault_Endpoint => <>, Last_Syscall_Tick => 0, Ring_Level => <>, State => Ready, Taint => <>);
+      PC : aliased Process_Context_Ref := new Aura.Vspace.Process_Context'(Vspace => new Aura.Vspace.V_Space);
+      Contract : aliased Reincarnation_Contract :=
+        (Header                  => <>,
+         Supervised              => PC,
+         Supervisor              => null,
+         Heartbeat_Timeout_Ms    => 1,
+         Last_Heartbeat_Tick     => 0,
+         Respawn_Cap             => null,
+         Restart_Count           => 0,
+         Max_Restarts            => 100,
+         Escalation_Policy_Field => Notify_Supervisor,
+         Mount_Log_Write_Cap     => null,
+         Mount_Log_Phys_Base     => 0,
+         Mount_Log_Capacity      => 0,
+         Free_Slot_Bitmap        => 0,
+         Max_Mounts              => 10,
+         Mounts_Since_Prune      => 0,
+         Restart_Strategy_Field  => One_For_One,
+         Group_Head              => (Present => False),
+         Next_In_Group           => null,
+         Sibling_Order           => 0,
+         Associated_Watchdog     => System.Null_Address);
+
+      Wd : aliased Watchdog :=
+        (Header     => <>,
+         Watched    => Downgrade (Th'Unchecked_Access),
+         Period     => 1,
+         Notify_Ref => (Target => null, Expected_Epoch => 0),
+         Policy     => Kill_And_Respawn,
+         Contract   => Downgrade (Contract'Unchecked_Access));
+
+      Reg : Watchdog_Vector;
+
+      procedure Run_Concurrent_Tasks is
+         task Watchdog_Runner;
+         task body Watchdog_Runner is
+         begin
+            for I in 1 .. 20 loop
+               Th.Last_Syscall_Tick := 0;
+               Watchdog_Tick (Interfaces.Unsigned_64 (I * 10));
+               delay 0.001;
+            end loop;
+         end Watchdog_Runner;
+
+         task Supervisor_Runner;
+         task body Supervisor_Runner is
+         begin
+            for I in 1 .. 20 loop
+               Supervisor_Tick (Contract, Interfaces.Unsigned_64 (I * 10));
+               delay 0.001;
+            end loop;
+         end Supervisor_Runner;
+      begin
+         null;
+      end Run_Concurrent_Tasks;
+
+   begin
+      Contract.Associated_Watchdog := Wd'Address;
+
+      -- Register Watchdog
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Append (Reg, Wd'Unchecked_Access);
+      Watchdogs.Unlock (Reg);
+
+      Run_Concurrent_Tasks;
+
+      Check ("watchdog: concurrent tick and supervisor execution is synchronized and completed", True);
+
+      -- Clean up watchdog vector
+      Watchdogs.Lock (Reg);
+      Watchdog_Vectors.Clear (Reg);
+      Watchdogs.Unlock (Reg);
+   end Test_Watchdog_Concurrency;
+
+   procedure Test_Retired_Pool_Overflow is
+      use Aura.Cap_Node;
+      Nodes : array (1 .. 128) of Cap_Node_Access := (others => null);
+      N_Extra : aliased Cap_Node_Inner :=
+        (Cap_Epoch          => 1,
+         Creation_Epoch     => 1,
+         Obj_Creation_Epoch => 1,
+         Depth              => 0,
+         Badge              => 0,
+         Rights_Mask        => 0,
+         Revoke_In_Progress => False,
+         Cap_Token          => 9999,
+         Parent             => null,
+         First_Child        => null,
+         Next_Sibling       => null,
+         Prev_Sibling       => null,
+         Valid_From         => 0,
+         Valid_Until        => 0,
+         Rights             => 0,
+         Revoke_Notify      => null);
+      St    : Kernel_Error;
+      Allocated_Count : Natural := 0;
+   begin
+      -- Reclaim any outstanding retired nodes to fully free the pool
+      Advance_Epoch_And_Reclaim;
+
+      -- Allocate as many nodes as possible until the pool is full
+      for I in 1 .. 128 loop
+         Alloc (1, Nodes (I), St);
+         exit when St /= Ok;
+         Allocated_Count := Allocated_Count + 1;
+      end loop;
+
+      -- Revoke all allocated nodes to fill the retired nodes array to its capacity (128)
+      for I in 1 .. Allocated_Count loop
+         Cap_Revoke (Nodes (I), St);
+         if St /= Ok then
+            Check ("cap_node: fill revoke failed", False);
+            return;
+         end if;
+      end loop;
+
+      -- Calling Cap_Revoke on this 129th node should fail with Capacity_Exceeded because Retired_Count is 128
+      Cap_Revoke (N_Extra'Unchecked_Access, St);
+      Check ("cap_node: Retire/Cap_Revoke returns Capacity_Exceeded on retired pool overflow",
+             St = Capacity_Exceeded);
+
+      -- Reclaim all retired nodes back to the pool
+      Advance_Epoch_And_Reclaim;
+   end Test_Retired_Pool_Overflow;
 
    procedure Test_Interrupt_Threading is
       use Aura.Sched;
@@ -1479,6 +1678,9 @@ begin
    Test_RCU_Epoch;
    Test_Fault_Delegation;
    Test_NMI_Watchdog;
+   Test_Watchdog_Kill_And_Respawn;
+   Test_Watchdog_Concurrency;
+   Test_Retired_Pool_Overflow;
    Test_Interrupt_Threading;
    Test_New_Enhancements;
    Test_Real_Subsystems;
