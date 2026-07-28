@@ -22,6 +22,7 @@ with Aura.Iommu;
 with Aura.Thread;
 with Aura.Mac;
 with Aura.Timer;
+with Aura.Hal;
 with System;
 with Aura.Rcu;
 with Aura.Fault;
@@ -1016,6 +1017,67 @@ procedure Aura_Selftest is
       Advance_Epoch_And_Reclaim;
    end Test_Retired_Pool_Overflow;
 
+   procedure Test_Atomic_CAS_And_Tick is
+      use Aura.Hal;
+      Shared_Word : aliased Interfaces.Unsigned_64 := 0;
+
+      procedure Run_Atomic_Tasks is
+         task type Worker;
+         task body Worker is
+            Success : Boolean;
+            Expected : Interfaces.Unsigned_64;
+         begin
+            for I in 1 .. 50 loop
+               loop
+                  Expected := Shared_Word;
+                  Atomic_Compare_Exchange_U64 (Shared_Word'Address, Expected, Expected + 1, Success);
+                  exit when Success;
+               end loop;
+            end loop;
+         end Worker;
+
+         W1, W2, W3, W4 : Worker;
+      begin
+         null; -- Wait for tasks to complete
+      end Run_Atomic_Tasks;
+   begin
+      Run_Atomic_Tasks;
+      Check ("hal: atomic CAS correctly synchronized 200 increments across multiple tasks",
+             Shared_Word = 200);
+   end Test_Atomic_CAS_And_Tick;
+
+   procedure Test_Timers_List_Synchronization is
+      use Aura.Timer;
+      use type Interfaces.Unsigned_64;
+
+      procedure Run_Timer_Tasks is
+         task Timer_Registerer;
+         task body Timer_Registerer is
+            Succ : Boolean;
+         begin
+            for I in 1 .. 5 loop
+               Register_Deadline_Timer (Aura.Timer.Global_Tick + Interfaces.Unsigned_64 (I * 5), My_Timer_Callback'Unrestricted_Access, Succ);
+               delay 0.001;
+            end loop;
+         end Timer_Registerer;
+
+         task Timer_Processor;
+         task body Timer_Processor is
+         begin
+            for I in 1 .. 30 loop
+               Timer_Interrupt_Handler;
+               delay 0.001;
+            end loop;
+         end Timer_Processor;
+      begin
+         null; -- Wait for tasks to complete
+      end Run_Timer_Tasks;
+   begin
+      Run_Timer_Tasks;
+      Check ("timer: Timers_List protected object processes concurrent registration and execution safely",
+             True);
+   end Test_Timers_List_Synchronization;
+
    procedure Test_Interrupt_Threading is
       use Aura.Sched;
    begin
@@ -1681,6 +1743,8 @@ begin
    Test_Watchdog_Kill_And_Respawn;
    Test_Watchdog_Concurrency;
    Test_Retired_Pool_Overflow;
+   Test_Atomic_CAS_And_Tick;
+   Test_Timers_List_Synchronization;
    Test_Interrupt_Threading;
    Test_New_Enhancements;
    Test_Real_Subsystems;

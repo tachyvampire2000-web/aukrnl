@@ -2,6 +2,8 @@
 --  тривиально корректна на одноядерной reference-конфигурации, либо
 --  возвращает Not_Supported, не имитируя успех.
 
+with System.Machine_Code;
+
 package body Aura.Hal is
 
    Next_Domain_Id : Interfaces.Unsigned_32 := 0;
@@ -118,17 +120,27 @@ package body Aura.Hal is
       Success  : out Boolean)
    is
       use type Interfaces.Unsigned_64;
+      use type Interfaces.Unsigned_8;
+      use System.Machine_Code;
+
       Word : Interfaces.Unsigned_64
         with Address => Target, Import, Volatile;
+
+      Actual_Expected : aliased Interfaces.Unsigned_64 := Expected;
+      Result_ZF       : Interfaces.Unsigned_8;
    begin
-      --  Reference-платформа однопроцессорная — CAS вырождается в
-      --  сравнение и запись под запретом вытеснения на этом уровне.
-      if Word = Expected then
-         Word    := Desired;
-         Success := True;
-      else
-         Success := False;
-      end if;
+      Asm
+        (Template => "lock; cmpxchgq %2, %0; setz %1",
+         Outputs  =>
+           [Interfaces.Unsigned_64'Asm_Output ("=m", Word),
+            Interfaces.Unsigned_8'Asm_Output ("=q", Result_ZF)],
+         Inputs   =>
+           [Interfaces.Unsigned_64'Asm_Input ("r", Desired),
+            Interfaces.Unsigned_64'Asm_Input ("a", Actual_Expected)],
+         Clobber  => "cc, memory",
+         Volatile => True);
+
+      Success := (Result_ZF /= 0);
    end Atomic_Compare_Exchange_U64;
 
 end Aura.Hal;
