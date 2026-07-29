@@ -8,6 +8,8 @@ package Aura.Ticket_Lock is
 
    pragma SPARK_Mode (On);
 
+   subtype Ticket_Index is Natural range 0 .. 15;
+
    protected type Instance is
       --  Захватывает лок, блокируясь до своей очереди.
       --  Эквивалент Rust TicketLock::lock() + TicketGuard.
@@ -26,10 +28,11 @@ package Aura.Ticket_Lock is
       procedure Init (Initial : Element_Type);
 
    private
+      entry Wait_Queue (Ticket_Index) (Item : out Element_Type);
+
       Data         : Element_Type;
       Next_Ticket  : Natural := 0;
       Now_Serving  : Natural := 0;
-      My_Ticket    : Natural := 0;
       Locked       : Boolean := False;
    end Instance;
 

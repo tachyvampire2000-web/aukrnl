@@ -23,6 +23,7 @@ with Aura.Thread;
 with Aura.Mac;
 with Aura.Timer;
 with Aura.Hal;
+with Aura.Ticket_Lock;
 with System;
 with Aura.Rcu;
 with Aura.Fault;
@@ -1156,6 +1157,66 @@ procedure Aura_Selftest is
       Check ("sched: blocked thread woke up after deadline expired", Th.State = Ready);
    end Test_Scheduler_Block_Until;
 
+   package Integer_Ticket_Locks is new Aura.Ticket_Lock (Integer);
+   My_FIFO_Lock : Integer_Ticket_Locks.Instance;
+
+   procedure Test_FIFO_Ticket_Lock is
+      use Integer_Ticket_Locks;
+      Sequence : array (1 .. 4) of Integer := (others => 0);
+      Seq_Index : aliased Integer := 0;
+
+      procedure Run_FIFO_Tasks is
+         -- Task type that locks, records its ID, and unlocks
+         task type Client (Id : Integer) is
+            entry Go;
+         end Client;
+
+         task body Client is
+            Val : Integer;
+         begin
+            accept Go;
+            My_FIFO_Lock.Lock (Val);
+            -- Record ID into sequence
+            declare
+               Idx : Integer;
+            begin
+               Seq_Index := Seq_Index + 1;
+               Idx := Seq_Index;
+               Sequence (Idx) := Id;
+            end;
+            My_FIFO_Lock.Unlock (Val);
+         end Client;
+
+         C1 : Client (1);
+         C2 : Client (2);
+         C3 : Client (3);
+         C4 : Client (4);
+
+         Main_Val : Integer;
+      begin
+         -- 1. Main task acquires the lock first
+         My_FIFO_Lock.Lock (Main_Val);
+
+         -- 2. Release clients sequentially to queue up on the lock in the order 1, 2, 3, 4
+         C1.Go;
+         delay 0.001; -- Enforce order of queueing
+         C2.Go;
+         delay 0.001;
+         C3.Go;
+         delay 0.001;
+         C4.Go;
+         delay 0.001;
+
+         -- 3. Release the lock. The clients should acquire it in FIFO order!
+         My_FIFO_Lock.Unlock (Main_Val);
+      end Run_FIFO_Tasks;
+   begin
+      My_FIFO_Lock.Init (0);
+      Run_FIFO_Tasks;
+      Check ("ticket_lock: FIFO ticket order is strictly respected",
+             Sequence (1) = 1 and Sequence (2) = 2 and Sequence (3) = 3 and Sequence (4) = 4);
+   end Test_FIFO_Ticket_Lock;
+
    procedure Test_Interrupt_Threading is
       use Aura.Sched;
    begin
@@ -1826,6 +1887,7 @@ begin
    Test_Real_Thread_Blocking;
    Test_Wait_Queue_Selective_Wakeup;
    Test_Scheduler_Block_Until;
+   Test_FIFO_Ticket_Lock;
    Test_Interrupt_Threading;
    Test_New_Enhancements;
    Test_Real_Subsystems;

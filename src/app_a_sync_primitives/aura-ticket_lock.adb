@@ -5,14 +5,26 @@ package body Aura.Ticket_Lock is
 
    protected body Instance is
 
-      entry Lock (Item : out Element_Type)
-         when not Locked is
+      entry Lock (Item : out Element_Type) when True is
+         My_Ticket : Natural;
       begin
-         My_Ticket := Now_Serving;
+         My_Ticket := Next_Ticket;
          Next_Ticket := Next_Ticket + 1;
-         Item := Data;
-         Locked := True;
+
+         if not Locked and then Now_Serving = My_Ticket then
+            Locked := True;
+            Item := Data;
+         else
+            requeue Wait_Queue (My_Ticket mod 16);
+         end if;
       end Lock;
+
+      entry Wait_Queue (for I in Ticket_Index) (Item : out Element_Type)
+         when not Locked and then Now_Serving mod 16 = I is
+      begin
+         Locked := True;
+         Item := Data;
+      end Wait_Queue;
 
       procedure Unlock (Item : Element_Type) is
       begin
@@ -25,7 +37,6 @@ package body Aura.Ticket_Lock is
          when True is
       begin
          if not Locked then
-            My_Ticket := Now_Serving;
             Next_Ticket := Next_Ticket + 1;
             Item := Data;
             Locked := True;
@@ -41,7 +52,6 @@ package body Aura.Ticket_Lock is
          Locked := False;
          Next_Ticket := 0;
          Now_Serving := 0;
-         My_Ticket := 0;
       end Init;
 
    end Instance;
