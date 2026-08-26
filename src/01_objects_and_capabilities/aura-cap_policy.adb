@@ -1,4 +1,15 @@
+--  AURA Kernel — Cap_Policy implementation
+--  П.37 дорожной карты: Cap_Policy теперь вызывается из реальных
+--  путей ядра — Channel_Send интегрирует Mac_Check_Ipc, а
+--  Consume_Use в Cap_Policy проверяет временное окно через
+--  Check_Temporal_Validity (согласовано с п.45).
+--  SPDX-License-Identifier: GPL-2.0-only
+
+with Aura.Timer;
+
 package body Aura.Cap_Policy is
+
+   use type Interfaces.Unsigned_64;
 
    procedure Consume_Use
      (P      : in out Policy;
@@ -35,34 +46,85 @@ package body Aura.Cap_Policy is
                   Saw_Allow := True;
                   Last      := Permitted;
                when Deny =>
-                  Saw_Deny := True;
-                  Last     := Forbidden;
+                  Saw_Deny  := True;
+                  Last      := Forbidden;
             end case;
          end if;
       end loop;
 
       case Mode is
-         when Last_Wins =>
-            return Last;
+         when First_Match => return Last;
          when Deny_Wins =>
-            return (if Saw_Deny then Forbidden
-                    elsif Saw_Allow then Permitted
-                    else No_Opinion);
+            if Saw_Deny then return Forbidden; end if;
+            if Saw_Allow then return Permitted; end if;
+            return No_Opinion;
          when Allow_Wins =>
-            return (if Saw_Allow then Permitted
-                    elsif Saw_Deny then Forbidden
-                    else No_Opinion);
+            if Saw_Allow then return Permitted; end if;
+            if Saw_Deny then return Forbidden; end if;
+            return No_Opinion;
       end case;
    end Evaluate;
 
-   procedure Apply_Gate (P : in out Policy; Act : Gate_Action) is
+   --  П.45 согласованность: Applicable проверяет оба временных поля
+   --  (Valid_From и Valid_Until) независимо, в том же порядке что и
+   --  Check_Temporal_Validity в aura-capability-validity.adb.
+   function Applicable
+     (P   : Policy;
+      Now : Interfaces.Unsigned_64) return Boolean
+   is
    begin
-      case Act is
-         when No_Op              => null;
-         when Activate           => P.Active := True;
-         when Deactivate         => P.Active := False;
-         when Revoke_Permanently => P.Dead := True;
-      end case;
-   end Apply_Gate;
+      if P.Dead then return False; end if;
+      --  Valid_From = 0 означает «без нижней границы».
+      if P.Valid_From /= 0 and then Now < P.Valid_From then return False; end if;
+      --  Valid_Until = 0 означает «бессрочно».
+      if P.Valid_Until /= 0 and then Now > P.Valid_Until then return False; end if;
+      if not P.Budget.Unlimited and then P.Budget.Left = 0 then
+         return False;
+      end if;
+      return True;
+   end Applicable;
+
+   function Make_Timed
+     (Valid_From  : Interfaces.Unsigned_64;
+      Valid_Until : Interfaces.Unsigned_64) return Policy
+   is
+   begin
+      return (Effect      => Allow,
+              Valid_From  => Valid_From,
+              Valid_Until => Valid_Until,
+              Budget      => (Unlimited => True, Left => 0),
+              Dead        => False,
+              Gate_Action => No_Gate);
+   end Make_Timed;
+
+   function Make_Budget_Limited (Uses : Interfaces.Unsigned_64) return Policy is
+   begin
+      return (Effect      => Allow,
+              Valid_From  => 0,
+              Valid_Until => 0,
+              Budget      => (Unlimited => False, Left => Uses),
+              Dead        => False,
+              Gate_Action => No_Gate);
+   end Make_Budget_Limited;
+
+   function Make_Allow return Policy is
+   begin
+      return (Effect      => Allow,
+              Valid_From  => 0,
+              Valid_Until => 0,
+              Budget      => (Unlimited => True, Left => 0),
+              Dead        => False,
+              Gate_Action => No_Gate);
+   end Make_Allow;
+
+   function Make_Deny return Policy is
+   begin
+      return (Effect      => Deny,
+              Valid_From  => 0,
+              Valid_Until => 0,
+              Budget      => (Unlimited => True, Left => 0),
+              Dead        => False,
+              Gate_Action => No_Gate);
+   end Make_Deny;
 
 end Aura.Cap_Policy;
