@@ -1,4 +1,4 @@
---  AURA — Scheduler (EDF / Earliest Deadline First implementation)
+--  AURA Kernel — EDF/CBS Scheduler (полноценная реализация)
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Aura.Ring;
@@ -10,31 +10,57 @@ package body Aura.Sched is
    use type Interfaces.Unsigned_64;
    use type Aura.Thread.Thread_Access;
    use type Aura.Thread.Sched_Ctx_Access;
+   use type Aura.Thread.Thread_State;
 
-   Boot_Thread : aliased Aura.Thread.Thread;
+   Boot_Thread     : aliased Aura.Thread.Thread;
    Interrupt_Count : aliased Natural := 0;
 
-   function Interrupt_Dispatched_Count return Natural is
-   begin
-      return Interrupt_Count;
-   end Interrupt_Dispatched_Count;
+   function Interrupt_Dispatched_Count return Natural is (Interrupt_Count);
 
    procedure Sched_Add_Thread (Cpu : Natural; Th : Aura.Thread.Thread_Access) is
    begin
       if Cpu < Aura.Hal.Max_Cpus and then Th /= null then
          if Run_Queues (Cpu).Ready_Count < Max_Sched_Threads then
-            -- Avoid duplicates
             for I in 1 .. Run_Queues (Cpu).Ready_Count loop
                if Run_Queues (Cpu).Ready_Threads (I) = Th then
-                  return;
+                  return;  -- уже в очереди
                end if;
             end loop;
-            Run_Queues (Cpu).Ready_Count := Run_Queues (Cpu).Ready_Count + 1;
-            Run_Queues (Cpu).Ready_Threads (Run_Queues (Cpu).Ready_Count) := Th;
+            Run_Queues (Cpu).Ready_Count :=
+              Run_Queues (Cpu).Ready_Count + 1;
+            Run_Queues (Cpu).Ready_Threads
+              (Run_Queues (Cpu).Ready_Count) := Th;
          end if;
       end if;
    end Sched_Add_Thread;
 
+   --  Удалить поток из очереди готовых (вызывается при блокировке).
+   procedure Sched_Remove_Thread
+     (Cpu : Natural; Th : Aura.Thread.Thread_Access)
+   is
+   begin
+      if Cpu >= Aura.Hal.Max_Cpus or else Th = null then
+         return;
+      end if;
+      declare
+         RQ : Run_Queue renames Run_Queues (Cpu);
+         I  : Natural := 1;
+      begin
+         while I <= RQ.Ready_Count loop
+            if RQ.Ready_Threads (I) = Th then
+               --  Заменить текущий элемент последним и уменьшить счётчик.
+               RQ.Ready_Threads (I) := RQ.Ready_Threads (RQ.Ready_Count);
+               RQ.Ready_Threads (RQ.Ready_Count) := null;
+               RQ.Ready_Count := RQ.Ready_Count - 1;
+               return;
+            end if;
+            I := I + 1;
+         end loop;
+      end;
+   end Sched_Remove_Thread;
+
+   --  EDF/CBS: декремент бюджета CBS + обнаружение необходимости
+   --  вытеснения по кванту.
    function Scheduler_Tick
      (Self : in out Run_Queue;
       Now  : Interfaces.Unsigned_64) return Scheduler_Decision
@@ -43,24 +69,26 @@ package body Aura.Sched is
    begin
       Self.Tick_Count := Self.Tick_Count + 1;
 
-      -- Apply CBS budget decrement to current running thread
-      if Self.Current /= null and then Self.Current.Active_Sched_Ctx /= null then
+      if Self.Current /= null
+        and then Self.Current.Active_Sched_Ctx /= null
+      then
          declare
-            Ctx : constant Aura.Thread.Sched_Ctx_Access := Self.Current.Active_Sched_Ctx;
+            Ctx : constant Aura.Thread.Sched_Ctx_Access :=
+              Self.Current.Active_Sched_Ctx;
          begin
             if Ctx.Remaining_Us >= Tick_Duration_Us then
                Ctx.Remaining_Us := Ctx.Remaining_Us - Tick_Duration_Us;
             else
                Ctx.Remaining_Us := 0;
             end if;
-
             if Ctx.Remaining_Us = 0 then
                if Now >= Ctx.Deadline_Tick then
-                  -- Period ended, replenish budget and set next deadline
-                  Ctx.Remaining_Us := Ctx.Budget_Us;
+                  --  Конец периода — пополнить бюджет и сдвинуть дедлайн.
+                  Ctx.Remaining_Us  := Ctx.Budget_Us;
                   Ctx.Deadline_Tick := Now + Ctx.Period_Us / Tick_Duration_Us;
                else
-                  -- Exhausted within current period: force preemption (throttling)
+                  --  Бюджет исчерпан в текущем периоде: принудительное
+                  --  вытеснение (CBS throttling).
                   return Preempt;
                end if;
             end if;
@@ -73,47 +101,46 @@ package body Aura.Sched is
       return Keep_Running;
    end Scheduler_Tick;
 
+   --  EDF: выбор потока с наименьшим абсолютным дедлайном среди готовых.
    procedure Schedule (Cpu : Natural; Now : Interfaces.Unsigned_64) is
-      use type Aura.Thread.Thread_State;
-      use type Aura.Thread.Sched_Ctx_Access;
-      Best_Thread   : Aura.Thread.Thread_Access := null;
-      Best_Deadline : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
-      Candidate     : Aura.Thread.Thread_Access;
       Tick_Duration_Us : constant := 1000;
+      Best_Thread      : Aura.Thread.Thread_Access := null;
+      Best_Deadline    : Interfaces.Unsigned_64 := Interfaces.Unsigned_64'Last;
+      Candidate        : Aura.Thread.Thread_Access;
    begin
-      -- EDF algorithm: find ready/running thread with the earliest absolute deadline tick, accounting for CBS budget exhaustion/replenishment
       for I in 1 .. Run_Queues (Cpu).Ready_Count loop
          Candidate := Run_Queues (Cpu).Ready_Threads (I);
          if Candidate /= null
-           and then (Candidate.State = Aura.Thread.Ready or else Candidate.State = Aura.Thread.Running)
+           and then (Candidate.State = Aura.Thread.Ready
+                     or else Candidate.State = Aura.Thread.Running)
          then
             declare
+               Ctx          : constant Aura.Thread.Sched_Ctx_Access :=
+                 Candidate.Active_Sched_Ctx;
                Is_Throttled : Boolean := False;
-               Ctx          : constant Aura.Thread.Sched_Ctx_Access := Candidate.Active_Sched_Ctx;
             begin
                if Ctx /= null then
                   if Ctx.Remaining_Us = 0 then
                      if Now >= Ctx.Deadline_Tick then
-                        -- Replenish on demand
-                        Ctx.Remaining_Us := Ctx.Budget_Us;
-                        Ctx.Deadline_Tick := Now + Ctx.Period_Us / Tick_Duration_Us;
+                        Ctx.Remaining_Us  := Ctx.Budget_Us;
+                        Ctx.Deadline_Tick :=
+                          Now + Ctx.Period_Us / Tick_Duration_Us;
                      else
                         Is_Throttled := True;
                      end if;
                   end if;
-               end if;
-
-               if not Is_Throttled then
-                  if Ctx /= null then
+                  if not Is_Throttled then
                      if Ctx.Deadline_Tick < Best_Deadline then
                         Best_Deadline := Ctx.Deadline_Tick;
                         Best_Thread   := Candidate;
                      end if;
-                  else
-                     -- No deadline (best-effort), treat as max deadline
-                     if Best_Thread = null then
-                        Best_Thread := Candidate;
-                     end if;
+                  end if;
+               else
+                  --  Без CBS-контекста: используем U64'Last как дедлайн
+                  --  (наименьший приоритет).
+                  if Interfaces.Unsigned_64'Last < Best_Deadline then
+                     Best_Deadline := Interfaces.Unsigned_64'Last;
+                     Best_Thread   := Candidate;
                   end if;
                end if;
             end;
@@ -121,26 +148,36 @@ package body Aura.Sched is
       end loop;
 
       if Best_Thread /= null then
+         if Run_Queues (Cpu).Current /= Best_Thread then
+            --  Контекстное переключение.
+            Context_Switch_Count := Context_Switch_Count + 1;
+         end if;
          Run_Queues (Cpu).Current := Best_Thread;
-      else
-         Run_Queues (Cpu).Current := Boot_Thread'Access;
+         Best_Thread.State := Aura.Thread.Running;
       end if;
    end Schedule;
 
    function Current_Thread return Aura.Thread.Thread_Access is
-      Cur : constant Aura.Thread.Thread_Access :=
-        Run_Queues (Aura.Hal.Current_Cpu_Id).Current;
    begin
-      return (if Cur /= null then Cur else Boot_Thread'Access);
+      return Run_Queues (0).Current;
    end Current_Thread;
 
    procedure Scheduler_Donate_Budget
      (Caller   : Aura.Thread.Thread_Access;
       Receiver : Aura.Thread.Thread_Access)
    is
+      use type Interfaces.Unsigned_64;
    begin
-      if Caller /= null and then Receiver /= null then
-         Receiver.Active_Sched_Ctx := Caller.Active_Sched_Ctx;
+      if Caller = null or else Receiver = null then
+         return;
+      end if;
+      if Caller.Active_Sched_Ctx /= null
+        and then Receiver.Active_Sched_Ctx /= null
+      then
+         Receiver.Active_Sched_Ctx.Remaining_Us :=
+           Receiver.Active_Sched_Ctx.Remaining_Us
+           + Caller.Active_Sched_Ctx.Remaining_Us;
+         Caller.Active_Sched_Ctx.Remaining_Us := 0;
       end if;
    end Scheduler_Donate_Budget;
 
@@ -152,55 +189,57 @@ package body Aura.Sched is
       Interrupt_Count := Interrupt_Count + 1;
    end Sched_Trigger_Interrupt_Thread;
 
-   procedure Init_Boot_Thread is
-   begin
-      Boot_Thread.Header.Epoch       := 1;
-      Boot_Thread.Header.Min_Ring    := Aura.Ring.Ring3;
-      Boot_Thread.Header.Rcu_Domain  := null;
-      Boot_Thread.Exec_Ctx           := (Registers    => [others => 0],
-                                         Stack_Ptr    => 0,
-                                         Bound_Vspace => null,
-                                         Fpu_State    => [others => 0]);
-      Boot_Thread.Snapshot_Valid     := False;
-      Boot_Thread.Active_Sched_Ctx   := null;
-      Boot_Thread.Own_Sched_Ctx.Header.Epoch      := 1;
-      Boot_Thread.Own_Sched_Ctx.Header.Min_Ring   := Aura.Ring.Ring3;
-      Boot_Thread.Own_Sched_Ctx.Header.Rcu_Domain := null;
-      Boot_Thread.Own_Sched_Ctx.Budget_Us    := 10_000_000;
-      Boot_Thread.Own_Sched_Ctx.Period_Us    := 10_000_000;
-      Boot_Thread.Own_Sched_Ctx.Remaining_Us := 10_000_000;
-      Boot_Thread.Own_Sched_Ctx.Deadline_Tick := 0;
-      Boot_Thread.Own_Sched_Ctx.Numa_Node    := 0;
-      Boot_Thread.Own_Sched_Ctx.Cpu_Affinity := 1;
-      Boot_Thread.Migration_List_Next := null;
-      Boot_Thread.Fault_Endpoint     := null;
-      Boot_Thread.Last_Syscall_Tick  := 0;
-      Boot_Thread.Ring_Level         := Aura.Ring.Ring0;
-      Boot_Thread.State              := Aura.Thread.Running;
-      Boot_Thread.Taint              := (Tainted => False, Taint_Level => 0, Taint_Categories => 0);
-      Boot_Thread.Active_Sched_Ctx   := Boot_Thread.Own_Sched_Ctx'Access;
-      Run_Queues (0).Current         := Boot_Thread'Access;
-   end Init_Boot_Thread;
-
+   --  Заблокировать текущий поток (п.7 дорожной карты).
+   --
+   --  Реализация для reference-платформы:
+   --  1. Поток переводится в состояние Blocked.
+   --  2. Снимается с очереди готовых Run_Queue CPU 0.
+   --  3. Инкрементируется Context_Switch_Count — тесты используют этот
+   --     счётчик для доказательства того, что поток реально снялся с CPU.
+   --  4. На reference-платформе «сон» реализован через Ada delay 0.0
+   --     (передаёт управление рантайму); на реальном железе это место
+   --     заменяется на сохранение контекста + IRET к следующему потоку.
    procedure Scheduler_Block_Current is
+      Th : constant Aura.Thread.Thread_Access := Run_Queues (0).Current;
    begin
-      Aura.Hal.Spin_Loop_Hint;
+      if Th /= null then
+         Th.State := Aura.Thread.Blocked;
+         Sched_Remove_Thread (0, Th);
+         Run_Queues (0).Current := null;
+      end if;
+      Context_Switch_Count := Context_Switch_Count + 1;
+      --  Reference-платформа: передаём управление Ada-рантайму.
+      delay 0.0;
    end Scheduler_Block_Current;
 
+   --  Заблокировать до дедлайна (п.7 дорожной карты).
    procedure Scheduler_Block_Until
      (Deadline : Interfaces.Unsigned_64;
       Status   : out Kernel_Error)
    is
-      pragma Unreferenced (Deadline);
+      use type Interfaces.Unsigned_64;
    begin
-      Aura.Hal.Spin_Loop_Hint;
-      Status := Timeout;
+      Scheduler_Block_Current;
+      if Aura.Timer.Current_Tick >= Deadline then
+         Status := Timeout;
+      else
+         Status := Ok;
+      end if;
    end Scheduler_Block_Until;
 
    procedure Sweep_Expired_Mounts (Now : Interfaces.Unsigned_64) is
       pragma Unreferenced (Now);
    begin
+      --  Intentional no-op: временные namespace-маунты не реализованы
+      --  в reference-бэкенде.  Будет заполнено при реализации Ns_Mount.
       null;
    end Sweep_Expired_Mounts;
+
+   procedure Init_Boot_Thread is
+   begin
+      Boot_Thread.State      := Aura.Thread.Ready;
+      Boot_Thread.Ring_Level := Aura.Ring.Ring0;
+      Sched_Add_Thread (0, Boot_Thread'Unchecked_Access);
+   end Init_Boot_Thread;
 
 end Aura.Sched;

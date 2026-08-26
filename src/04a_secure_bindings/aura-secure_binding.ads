@@ -13,8 +13,10 @@ package Aura.Secure_Binding is
 
    use type Interfaces.Unsigned_64;
 
-   type Iommu_Domain_Ref is access all Integer; -- Placeholder
-   type Prm_Resource_Set_Cap is access all Integer; -- Placeholder
+   type Iommu_Domain;
+   type Iommu_Domain_Ref is access all Iommu_Domain;
+   type Prm_Resource_Set;
+   type Prm_Resource_Set_Cap is access all Prm_Resource_Set;
 
    subtype Process_Context is Aura.Vspace.Process_Context;
    subtype Process_Context_Ref is Aura.Vspace.Process_Context_Ref;
@@ -73,5 +75,9 @@ package Aura.Secure_Binding is
       Result   : out Secure_Binding_Manage_Ref;
       Status   : out Kernel_Error);
 
+private
+
+   type Iommu_Domain is limited null record;
+   type Prm_Resource_Set is limited null record;
 
 end Aura.Secure_Binding;

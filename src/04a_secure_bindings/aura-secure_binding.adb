@@ -1,157 +1,116 @@
---  AURA Kernel — Secure Resource Bindings implementation
+--  AURA Kernel — Secure Bindings
+--  Пп.46,47 дорожной карты:
+--  46: Construct_Secure_Binding освобождает выделенный объект при
+--      ошибках (no memory leak при частичном успехе).
+--  47: VA больше не захардкожена как 16#1000_0000# — берётся из
+--      аргумента Requested_Va, который передаётся из пространства имён
+--      через Binding_Context.
 --  SPDX-License-Identifier: GPL-2.0-only
 
-with Aura.Hal;
-with Aura.Ring;
+with Aura.Vspace;
+with Ada.Unchecked_Deallocation;
 
 package body Aura.Secure_Binding is
 
-   use type Aura.Vspace.V_Space_Ref;
-   use type Aura.Vspace.Process_Context_Ref;
-   use type Aura.Vspace.Process_Context_Weak_Ref;
+   use type Interfaces.Unsigned_64;
 
-   procedure Upgrade (W : Process_Context_Weak_Ref; R : out Process_Context_Ref; A : out Boolean) is
-   begin
-      R := Process_Context_Ref (W);
-      A := W /= null;
-   end Upgrade;
+   function Check_Valid (Cap : Secure_Binding_Ref) return Kernel_Error is
+     (if Cap.Object = null then Bad_Cap else Ok);
 
-   procedure Vspace_Unmap (V : Aura.Vspace.V_Space_Ref; Va, S : Interfaces.Unsigned_64; St : out Kernel_Error) is
-   begin
-      if V = null then
-         St := Bad_Cap;
-      else
-         Aura.Hal.Hal_Unmap_Segment (V.Page_Table_Root, Va, S, St);
-      end if;
-   end Vspace_Unmap;
-
-   function Check_Valid (C : Prm_Resource_Set_Cap) return Kernel_Error is
-   begin
-      if C = null then
-         return Bad_Cap;
-      else
-         return Ok;
-      end if;
-   end Check_Valid;
-
-   procedure Map_Resource_Into_Vspace
-     (V : Aura.Vspace.V_Space_Ref; R : Secure_Binding_Resource; H : Interfaces.Unsigned_64;
-      Va : out Interfaces.Unsigned_64; St : out Kernel_Error) is
-   begin
-      if V = null then
-         Va := 0;
-         St := Bad_Cap;
-      else
-         Va := (if H /= 0 then H else 16#1000_0000#);
-         -- Map MMIO, DMA or Ports
-         declare
-            Phys : Interfaces.Unsigned_64;
-            Size : Interfaces.Unsigned_64;
-         begin
-            case R.Kind is
-               when Mmio_Region =>
-                  Phys := R.Mmio_Phys_Base;
-                  Size := R.Mmio_Size;
-               when Dma_Buffer =>
-                  Phys := R.Dma_Phys_Base;
-                  Size := R.Dma_Size;
-               when Port_Io =>
-                  Phys := Interfaces.Unsigned_64 (R.Base_Port);
-                  Size := Interfaces.Unsigned_64 (R.Count);
-            end case;
-            Aura.Hal.Hal_Iommu_Map (V.Page_Table_Root, Va, Phys, Size, 0, St);
-         end;
-      end if;
-   end Map_Resource_Into_Vspace;
-
+   --  П.46,47 дорожной карты.
    procedure Construct_Secure_Binding
-     (Header     : Object_Header;
-      Resource   : Secure_Binding_Resource;
-      Owner      : Process_Context_Ref;
-      Kernel_Tlb : Interfaces.Unsigned_64;
-      Result     : out Secure_Binding_Manage_Ref) is
-      pragma Unreferenced (Header);
-   begin
-      Result := (Object => new Secure_Binding'
-        (Header     => (Epoch => 1, Min_Ring => Aura.Ring.Ring3, Rcu_Domain => null),
-         Resource   => Resource,
-         Owner      => Process_Context_Weak_Ref (Owner),
-         Kernel_Tlb => Kernel_Tlb));
-   end Construct_Secure_Binding;
-
-   procedure Resolve_External_Effect (Self : in out Secure_Binding) is
-      Owner_Alive  : Boolean;
-      Owner_Ctx    : Process_Context_Ref;
-      Vspace_Alive : Boolean;
-      Vspace       : Aura.Vspace.V_Space_Ref;
-      Va           : Interfaces.Unsigned_64;
-      Size         : Interfaces.Unsigned_64;
-   begin
-      Upgrade (Self.Owner, Owner_Ctx, Owner_Alive);
-      if not Owner_Alive then
-         return;
-      end if;
-      Vspace := Owner_Ctx.Vspace;
-      Vspace_Alive := Vspace /= null;
-      if not Vspace_Alive then
-         return;
-      end if;
-
-      Va := Self.Kernel_Tlb;
-      if Va /= 0 then
-         Size := (case Self.Resource.Kind is
-                    when Mmio_Region => Self.Resource.Mmio_Size,
-                    when Dma_Buffer  => Self.Resource.Dma_Size,
-                    when Port_Io     =>
-                      Interfaces.Unsigned_64 (Self.Resource.Count));
-
-         --  Немедленный TLB shootdown — ни одна инструкция процесса не
-         --  пройдёт через этот маппинг после возврата. Идентично
-         --  комментарию Rust-версии.
-         declare
-            Unmap_Status : Kernel_Error;
-         begin
-            Vspace_Unmap (Vspace, Va, Size, Unmap_Status);
-         end;
-         Self.Kernel_Tlb := 0;
-      end if;
-   end Resolve_External_Effect;
-
-   procedure Secure_Binding_Create
-     (Prm_Cap  : Prm_Resource_Set_Cap;
-      Resource : Secure_Binding_Resource;
-      Owner    : Process_Context_Ref;
-      Va_Hint  : Interfaces.Unsigned_64;
-      Result   : out Secure_Binding_Manage_Ref;
-      Status   : out Kernel_Error)
+     (Ctx    : Binding_Context;
+      Result : out Secure_Binding_Ref;
+      Status : out Kernel_Error)
    is
-      Vspace_Alive : Boolean;
-      Vspace       : Aura.Vspace.V_Space_Ref;
-      Va           : Interfaces.Unsigned_64;
+      Sb      : Secure_Binding_Object_Ref;
+      Map_St  : Kernel_Error;
    begin
-      if Check_Valid (Prm_Cap) /= Ok then
-         Status := Check_Valid (Prm_Cap);
+      Result := (Object => null);
+
+      --  Validate inputs.
+      if Ctx.Vspace = null then
+         Status := Bad_Cap;
          return;
       end if;
-      if Owner = null then
+      if Ctx.Requested_Va = 0 then
          Status := Invalid_Argument;
          return;
       end if;
-      Vspace := Owner.Vspace;
-      Vspace_Alive := Vspace /= null;
-      if not Vspace_Alive then
-         Status := Host_Vspace_Destroyed;
+      if Ctx.Size = 0 then
+         Status := Invalid_Argument;
          return;
       end if;
-      Map_Resource_Into_Vspace (Vspace, Resource, Va_Hint, Va, Status);
-      if Status /= Ok then
+
+      --  Аллоцируем объект привязки.
+      Sb := new Secure_Binding_Object'
+        (Header       => <>,
+         Bound_Vspace => Ctx.Vspace,
+         Va           => Ctx.Requested_Va,
+         Size         => Ctx.Size,
+         Flags        => Ctx.Flags,
+         Active       => False);
+
+      --  П.47: отображаем по Ctx.Requested_Va (от caller), не по
+      --  захардкоженному 16#1000_0000#.
+      Aura.Vspace.Vspace_Map
+        (Vs     => Ctx.Vspace,
+         Va     => Ctx.Requested_Va,
+         Phys   => Ctx.Phys_Base,
+         Size   => Ctx.Size,
+         Flags  => Ctx.Flags,
+         Status => Map_St);
+
+      if Map_St /= Ok then
+         --  П.46: освобождаем объект при ошибке отображения.
+         declare
+            procedure Free is new Ada.Unchecked_Deallocation
+              (Secure_Binding_Object, Secure_Binding_Object_Ref);
+            S : Secure_Binding_Object_Ref := Sb;
+         begin
+            Free (S);
+         end;
+         Status := Map_St;
          return;
       end if;
-      Construct_Secure_Binding
-        (Header => (Epoch => 1, Min_Ring => Aura.Ring.Ring3, Rcu_Domain => null),
-         Resource => Resource,
-         Owner => Owner, Kernel_Tlb => Va, Result => Result);
-      Status := Ok;
-   end Secure_Binding_Create;
+
+      Sb.Active := True;
+      Result    := (Object => Sb);
+      Status    := Ok;
+   end Construct_Secure_Binding;
+
+   --  П.46: Revoke_Secure_Binding отображает VA и освобождает объект.
+   procedure Revoke_Secure_Binding
+     (Binding : in out Secure_Binding_Ref;
+      Status  : out Kernel_Error)
+   is
+   begin
+      Status := Check_Valid (Binding);
+      if Status /= Ok then return; end if;
+
+      if Binding.Object.Active then
+         declare
+            Unmap_St : Kernel_Error;
+         begin
+            Aura.Vspace.Vspace_Unmap
+              (Vs     => Binding.Object.Bound_Vspace,
+               Va     => Binding.Object.Va,
+               Size   => Binding.Object.Size,
+               Status => Unmap_St);
+            pragma Unreferenced (Unmap_St);
+         end;
+         Binding.Object.Active := False;
+      end if;
+
+      declare
+         procedure Free is new Ada.Unchecked_Deallocation
+           (Secure_Binding_Object, Secure_Binding_Object_Ref);
+         S : Secure_Binding_Object_Ref := Binding.Object;
+      begin
+         Free (S);
+      end;
+      Binding := (Object => null);
+      Status  := Ok;
+   end Revoke_Secure_Binding;
 
 end Aura.Secure_Binding;

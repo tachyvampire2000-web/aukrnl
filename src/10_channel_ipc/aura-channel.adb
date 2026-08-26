@@ -4,6 +4,7 @@
 
 with System;
 with Aura.Hal;
+with Aura.Mac;
 with Aura.Sched;
 with Aura.Timer;
 
@@ -111,6 +112,17 @@ package body Aura.Channel is
    begin
       Status := Check_Valid (Ep);
       if Status /= Ok then
+         return;
+      end if;
+
+      --  П.33: IPC является записью от отправителя к получателю.
+      --  На endpoint хранится уровень отправителя; уровень канала
+      --  используется как уровень получателя по умолчанию.
+      if Aura.Mac.Mac_Check_Ipc
+           (Aura.Mac.Integrity_Level (Ep.Object.Mac_Level),
+            Aura.Mac.Integrity_Untrusted) = Aura.Mac.Mac_Deny
+      then
+         Status := Perm_Denied;
          return;
       end if;
 

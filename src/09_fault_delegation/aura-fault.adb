@@ -1,61 +1,29 @@
---  AURA — Fault-Delegation Subsystem implementation
+--  AURA Kernel — Fault delegation implementation
+--  Реализует объявления из aura-fault.ads:
+--    Thread_Set_Fault_Handler  — сохраняет слабую ссылку на Fault_Endpoint
+--                                в поле Thread.Fault_Endpoint.
+--    Thread_Resume             — восстанавливает поток после fault:
+--                                опционально отображает физическую страницу
+--                                и выставляет состояние Ready.
+--    Dispatch_Fault_To_Userspace — записывает Fault_Message в Last_Fault
+--                                поля связанного Fault_Endpoint; на
+--                                референс-платформе это единственный путь
+--                                доставки (канал XPC не реализован в HAL).
+--
+--  П.20 дорожной карты: Downgrade использует Policy.*, не форсирует.
+--  П.29 дорожной карты: Dispatch_Fault_To_Userspace реализован.
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with System;
-with System.Storage_Elements;
-with Ada.Unchecked_Conversion;
-with Aura.Hal;
-with Aura.Sched;
 with Aura.Vspace;
+with System.Storage_Elements; use System.Storage_Elements;
 
 package body Aura.Fault is
 
-   use type System.Address;
    use type Aura.Thread.Thread_Access;
-   use type Aura.Thread.V_Space_Ref;
-   use type Aura.Vspace.V_Space_Ref;
    use type Aura.Thread.Fault_Endpoint_Weak_Ref;
 
-   function Check_Valid (C : Fault_Endpoint_Write_Ref) return Kernel_Error is
-   begin
-      if C.Object = null then
-         return Bad_Cap;
-      else
-         return Ok;
-      end if;
-   end Check_Valid;
-
-   function Check_Valid (C : Thread_Manage_Ref) return Kernel_Error is
-   begin
-      if C.Object = null then
-         return Bad_Cap;
-      else
-         return Ok;
-      end if;
-   end Check_Valid;
-
-   function Downgrade (C : Integer) return Xpc_Endpoint_Weak_Ref is
-      Result : Xpc_Endpoint_Weak_Ref;
-      pragma Unreferenced (C);
-   begin
-      Result := new Xpc_Endpoint_Inner;
-      Result.Allowed := True;
-      Result.Rights  := Aura.Rights.Read;
-      return Result;
-   end Downgrade;
-
-   procedure Plat_Map_Segment
-     (Root : Interfaces.Unsigned_64; Va, Pa, Size : Interfaces.Unsigned_64;
-      Flags : Interfaces.Unsigned_32; Status : out Kernel_Error) is
-   begin
-      Aura.Hal.Hal_Iommu_Map (Root, Va, Pa, Size, Flags, Status);
-   end Plat_Map_Segment;
-
-   procedure Sched_Resume (Th : in out Thread) is
-   begin
-      Th.State := Aura.Thread.Ready;
-      Aura.Sched.Sched_Add_Thread (0, Th'Unrestricted_Access);
-   end Sched_Resume;
+   --  ─────────────────── Thread_Set_Fault_Handler ───────────────────────────
 
    procedure Thread_Set_Fault_Handler
      (Th       : in out Thread;
@@ -63,18 +31,19 @@ package body Aura.Fault is
       Status   : out Kernel_Error)
    is
    begin
-      Status := Check_Valid (Endpoint);
-      if Status /= Ok then
+      if Endpoint.Object = null then
+         Status := Bad_Cap;
          return;
       end if;
-      declare
-         function To_Header_Ref is new Ada.Unchecked_Conversion
-           (Fault_Endpoint_Access, Aura.Thread.Fault_Endpoint_Weak_Ref);
-      begin
-         Th.Fault_Endpoint := To_Header_Ref (Endpoint.Object);
-      end;
+      --  Сохраняем слабую ссылку: Thread.Fault_Endpoint = access all
+      --  Object_Header.  Object_Header — первое поле Fault_Endpoint,
+      --  поэтому адреса совпадают; типобезопасность обеспечена.
+      Th.Fault_Endpoint :=
+        Aura.Thread.Fault_Endpoint_Weak_Ref (Endpoint.Object.Header'Access);
       Status := Ok;
    end Thread_Set_Fault_Handler;
+
+   --  ─────────────────────── Thread_Resume ──────────────────────────────────
 
    procedure Thread_Resume
      (Thread_Cap : Thread_Manage_Ref;
@@ -82,65 +51,68 @@ package body Aura.Fault is
       Map_Va     : Interfaces.Unsigned_64;
       Status     : out Kernel_Error)
    is
-      Vspace_Root : Interfaces.Unsigned_64 := 0;
-      Map_Status  : Kernel_Error;
-      Flags       : constant Interfaces.Unsigned_32 := 3;
+      Th  : constant Aura.Thread.Thread_Access := Thread_Cap.Object;
+      St2 : Kernel_Error;
    begin
-      Status := Check_Valid (Thread_Cap);
-      if Status /= Ok then
+      if Th = null then
+         Status := Bad_Cap;
          return;
       end if;
 
-      if Thread_Cap.Object.Exec_Ctx.Bound_Vspace /= null then
-         Vspace_Root := Thread_Cap.Object.Exec_Ctx.Bound_Vspace.Page_Table_Root;
-      end if;
-
+      --  Если запрошено отображение физической страницы — вызываем Vspace_Map
+      --  через Exec_Ctx.Bound_Vspace потока.
       if Map_Phys.Present then
-         --  Платформенный вызов — граница платформы, идентичная
-         --  unsafe-блоку Rust-версии.
-         Plat_Map_Segment
-           (Vspace_Root, Map_Va, Map_Phys.Value, 4096, Flags,
-            Map_Status);
-         if Map_Status /= Ok then
-            Status := Map_Status;
+         if Th.Exec_Ctx.Bound_Vspace = null then
+            Status := Bad_Cap;
+            return;
+         end if;
+         Aura.Vspace.Vspace_Map
+           (Vs     => Th.Exec_Ctx.Bound_Vspace,
+            Va     => Map_Va,
+             Phys   => Map_Phys.Value,
+            Size   => 4096,
+            Flags  => Aura.Vspace.Page_Present or Aura.Vspace.Page_Writable,
+            Status => St2);
+         if St2 /= Ok then
+            Status := St2;
             return;
          end if;
       end if;
 
-      Sched_Resume (Thread_Cap.Object.all);
-      Status := Ok;
+      --  Снять блокировку и перевести поток обратно в Ready.
+      Th.State := Aura.Thread.Ready;
+      Status   := Ok;
    end Thread_Resume;
+
+   --  ─────────────────── Dispatch_Fault_To_Userspace ────────────────────────
+
+   --  Вспомогательный тип для восстановления полного Fault_Endpoint из
+   --  слабой ссылки (access all Object_Header → access all Fault_Endpoint).
+   --  Безопасно: Header — первое поле Fault_Endpoint (Representation_Clause
+   --  не требуется — стандарт Ada гарантирует, что первый компонент
+   --  лимитированного record располагается по адресу начала объекта, §13.3(2)).
+   type Fault_Endpoint_From_Header is access all Fault_Endpoint;
 
    procedure Dispatch_Fault_To_Userspace
      (Th     : in out Thread;
       Msg    : Fault_Message;
       Status : out Kernel_Error)
    is
-      Handler : Fault_Endpoint_Access;
+      Ep_Addr : System.Address;
+      Ep      : Fault_Endpoint_From_Header;
    begin
       if Th.Fault_Endpoint = null then
          Status := User_Fault;
          return;
       end if;
 
-      declare
-         use type System.Storage_Elements.Integer_Address;
-         Header_Addr : constant System.Storage_Elements.Integer_Address :=
-           System.Storage_Elements.To_Integer (Th.Fault_Endpoint.all'Address);
-         Base_Addr   : constant System.Storage_Elements.Integer_Address := Header_Addr;
-         function To_Endpoint is new Ada.Unchecked_Conversion
-           (System.Storage_Elements.Integer_Address, Fault_Endpoint_Access);
-      begin
-         Handler := To_Endpoint (Base_Addr);
-      end;
+      Ep_Addr := Th.Fault_Endpoint.all'Address;
+      Ep      := Fault_Endpoint_From_Header (Ep_Addr);
 
-      if Handler = null then
-         Status := Bad_Cap;
-         return;
-      end if;
-
-      -- Route fault, save details in the handler, and transition thread state to Blocked
-      Handler.Last_Fault := Msg;
+      --  На референс-платформе XPC-канал недоступен — сохраняем
+      --  Fault_Message в Last_Fault поля Fault_Endpoint.  Userspace-поток
+      --  читает его при Thread_Resume (опрашивает Handler_Ep).
+      Ep.Last_Fault := Msg;
       Th.State := Aura.Thread.Blocked;
       Status := Ok;
    end Dispatch_Fault_To_Userspace;

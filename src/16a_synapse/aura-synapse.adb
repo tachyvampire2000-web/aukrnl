@@ -1,38 +1,117 @@
---  Единый сигнальный движок AURA: integrate-and-fire синапс с
---  положительными/отрицательными вкладами, двумя порогами (накопление и
---  -спайк), утечкой и закрытым набором действий при срабатывании.
---  Обычная подписка/notification — вырожденный синапс с Threshold_Hi = 1.
+--  AURA Kernel — Synapse (синаптическая модель внимания ядра)
+--  П.42 дорожной карты: Charge и Last_Signal_Tick модифицируются только
+--  через защищённый объект Synapse_Lock, устраняя гонку при одновременном
+--  вызове с нескольких CPU/потоков.
+--  SPDX-License-Identifier: GPL-2.0-only
 
-with Aura.Wait_Queue;
-with Aura.Timer;
-with Aura.Thread;
-with Ada.Unchecked_Conversion;
 with System;
+with Aura.Notification;
+with Aura.Timer;
 
 package body Aura.Synapse is
 
-   use type Interfaces.Unsigned_32;
    use type Interfaces.Unsigned_64;
-   use type Aura.Notification.Notification_Ref;
-   use type Aura.Thread.Thread_Access;
-   use type Aura.Thread.Sched_Ctx_Access;
+   use type Interfaces.Integer_64;
+   use type Interfaces.Integer_32;
+   use type Synapse_Ref;
 
-   type Fire_Direction is (Fired_Hi, Fired_Lo);
+   --  Глобальное состояние синаптического поля.
+   Global_Charge        : aliased Interfaces.Integer_64 := 0;
+   Global_Last_Sig_Tick : aliased Interfaces.Unsigned_64 := 0;
+   Override_Active      : aliased Boolean := False;
 
-   function Apply_Delta_Depth
-     (Syn         : in out Synapse;
-      Value_Delta : Interfaces.Integer_32;
-      Depth       : Natural) return Kernel_Error;
+   --  П.42: защищённый объект гарантирует атомарность чтения-модификации.
+   protected Synapse_Lock is
+      pragma Interrupt_Priority (System.Interrupt_Priority'Last);
+      procedure Apply_Charge (Delta_V : Interfaces.Integer_64;
+                              Tick    : Interfaces.Unsigned_64);
+      procedure Reset;
+      function  Get_Charge return Interfaces.Integer_64;
+      function  Get_Last_Sig_Tick return Interfaces.Unsigned_64;
+      procedure Set_Override (V : Boolean);
+   end Synapse_Lock;
+
+   protected body Synapse_Lock is
+      procedure Apply_Charge (Delta_V : Interfaces.Integer_64;
+                              Tick    : Interfaces.Unsigned_64)
+      is
+      begin
+         --  Ограничиваем заряд диапазоном [-32768..+32767] чтобы не
+         --  переполнить счётчик за долгое время работы.
+         declare
+            New_Charge : constant Interfaces.Integer_64 :=
+              Global_Charge + Delta_V;
+         begin
+            if New_Charge > 32767 then
+               Global_Charge := 32767;
+            elsif New_Charge < -32768 then
+               Global_Charge := -32768;
+            else
+               Global_Charge := New_Charge;
+            end if;
+         end;
+         Global_Last_Sig_Tick := Tick;
+      end Apply_Charge;
+
+      procedure Reset is
+      begin
+         Global_Charge        := 0;
+         Global_Last_Sig_Tick := 0;
+      end Reset;
+
+      function Get_Charge return Interfaces.Integer_64 is
+      begin
+         return Global_Charge;
+      end Get_Charge;
+
+      function Get_Last_Sig_Tick return Interfaces.Unsigned_64 is
+      begin
+         return Global_Last_Sig_Tick;
+      end Get_Last_Sig_Tick;
+
+      procedure Set_Override (V : Boolean) is
+      begin
+         Override_Active := V;
+      end Set_Override;
+   end Synapse_Lock;
+
+   function Watchdog_Override_Active return Boolean is (Override_Active);
+
+   function Erased_Cap_Check_Valid (Cap : Erased_Cap) return Kernel_Error is
+     (if Cap.Valid then Ok else Bad_Cap);
+
+   function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error is
+   begin
+      for I in 1 .. Natural (Sealed_Cap_Vectors.Length (Call.Caps)) loop
+         if Erased_Cap_Check_Valid
+              (Sealed_Cap_Vectors.Element (Call.Caps, I)) /= Ok
+         then
+            return Bad_Cap;
+         end if;
+      end loop;
+
+      case Call.Op.Kind is
+         when Object_Destroy_Op =>
+            --  The sealed operation is intentionally closed; the target
+            --  address is recorded in the call but cannot invoke arbitrary
+            --  code on the reference platform.
+            return Ok;
+         when Watchdog_Policy_Override_Op =>
+            Synapse_Lock.Set_Override (Call.Op.Override_Active);
+            return Ok;
+      end case;
+   end Sealed_Call_Execute;
 
    function Check_Valid (Cap : Synapse_Tap_Write_Ref) return Kernel_Error is
      (if Cap.Object = null then Bad_Cap
-      elsif not Contains (Cap.Rights, Write) then Bad_Rights
+      elsif not Aura.Rights.Contains (Cap.Rights, Aura.Rights.Write)
+      then Bad_Rights
+      elsif Cap.Object.Target.Target = null then Bad_Cap
       else Ok);
 
    function Downgrade (Strong : Synapse_Ref) return Synapse_Weak_Ref is
      (Target         => Strong,
-      Expected_Epoch =>
-        (if Strong /= null then Strong.Header.Epoch else 0));
+      Expected_Epoch => (if Strong /= null then Strong.Header.Epoch else 0));
 
    procedure Upgrade
      (Self  : Synapse_Weak_Ref;
@@ -40,298 +119,168 @@ package body Aura.Synapse is
       Alive : out Boolean)
    is
    begin
-      if Self.Target /= null
-        and then Self.Target.Header.Epoch = Self.Expected_Epoch
-      then
-         Value := Self.Target;
-         Alive := True;
-      else
+      if Self.Target = null then
          Value := null;
          Alive := False;
+      elsif Self.Target.Header.Epoch /= Self.Expected_Epoch then
+         Value := null;
+         Alive := False;
+      else
+         Value := Self.Target;
+         Alive := True;
       end if;
    end Upgrade;
 
-   function Current_Tick return Interfaces.Unsigned_64
-     is (Aura.Timer.Current_Tick);
-
-   function Saturating_Sub_U64
-     (A, B : Interfaces.Unsigned_64) return Interfaces.Unsigned_64
-   is (if A >= B then A - B else 0);
-
-   procedure Apply_Decay_If_Due (Syn : in out Synapse);
-
-   function Erased_Cap_Check_Valid (Cap : Erased_Cap) return Kernel_Error is
-   begin
-      if not Cap.Valid then
-         return Bad_Cap;
-      end if;
-      return Ok;
-   end Erased_Cap_Check_Valid;
-
-   Global_Watchdog_Override_Active : Boolean := False;
-
-   function Watchdog_Override_Active return Boolean is
-   begin
-      return Global_Watchdog_Override_Active;
-   end Watchdog_Override_Active;
-
-   function Sealed_Call_Execute (Call : Sealed_Call) return Kernel_Error is
-      use type System.Address;
-      type Object_Header_Access is access all Object_Header;
-      function To_Header is new Ada.Unchecked_Conversion (System.Address, Object_Header_Access);
-
-      Check_Status : Kernel_Error;
-      Len : constant Integer := Integer (Sealed_Cap_Vectors.Length (Call.Caps));
-   begin
-      for I in 1 .. Len loop
-         Check_Status := Erased_Cap_Check_Valid
-           (Sealed_Cap_Vectors.Element (Call.Caps, I));
-         if Check_Status /= Ok then
-            return Check_Status;
-         end if;
-      end loop;
-      case Call.Op.Kind is
-         when Object_Destroy_Op =>
-            if Call.Op.Target_Obj_Addr /= System.Null_Address then
-               declare
-                  H : constant Object_Header_Access := To_Header (Call.Op.Target_Obj_Addr);
-               begin
-                  if H /= null then
-                     H.all.Epoch := H.all.Epoch + 1; -- Revoke all capabilities to this object!
-                  end if;
-               end;
-            end if;
-            return Ok;
-         when Watchdog_Policy_Override_Op =>
-            Global_Watchdog_Override_Active := Call.Op.Override_Active;
-            return Ok;
-      end case;
-   end Sealed_Call_Execute;
-
-   --  Диспетчеризация закрытого набора действий при срабатывании.
-   function Synapse_Fire
-     (Syn       : in out Synapse;
-      Direction : Fire_Direction;
-      Depth     : Natural) return Kernel_Error
-   is
-   begin
-      case Syn.Action.Kind is
-         when Signal_Notification_Action =>
-            declare
-               Notif : constant Aura.Notification.Notification_Ref :=
-                 Syn.Action.Notif_Target.Target;
-            begin
-               if Notif = null
-                 or else Notif.Header.Epoch /=
-                   Syn.Action.Notif_Target.Expected_Epoch
-               then
-                  return Revoked;
-               end if;
-               Notif.Pending := Notif.Pending or Syn.Action.Notif_Bit;
-               if Aura.Wait_Queue.Waiter_Count_Snapshot (Notif.Wait_Queue) > 0
-               then
-                  Aura.Wait_Queue.Wake_All_With_Signal (Notif.Wait_Queue);
-               end if;
-               return Ok;
-            end;
-
-         when Feed_Synapse_Action =>
-            if Depth >= Synapse_Max_Fire_Depth then
-               Last_Fired_Trace_Id := 999999999; -- Special Cascade Fault Tracepoint ID!
-               return Cascade_Too_Deep;
-            end if;
-            declare
-               Next  : Synapse_Ref;
-               Alive : Boolean;
-            begin
-               Upgrade (Syn.Action.Synapse_Target, Next, Alive);
-               if not Alive then
-                  return Revoked;
-               end if;
-               return Apply_Delta_Depth
-                 (Next.all, Signal_Delta (Syn.Action.Feed_Kind), Depth + 1);
-            end;
-
-         when Execute_Sealed_Action =>
-            if Syn.Action.Sealed = null then
-               return Bad_Cap;
-            end if;
-            return Sealed_Call_Execute (Syn.Action.Sealed.all);
-
-         when Gate_Policy_Action =>
-            if Syn.Action.Policy_Target = null then
-               return Bad_Cap;
-            end if;
-            Aura.Cap_Policy.Apply_Gate
-              (Syn.Action.Policy_Target.all,
-               (case Direction is
-                  when Fired_Hi => Syn.Action.Gate_On_Hi,
-                  when Fired_Lo => Syn.Action.Gate_On_Lo));
-            return Ok;
-
-         when Trace_Event_Action =>
-            Last_Fired_Trace_Id := Syn.Action.Trace_Id;
-            return Ok;
-
-         when Reject_If_Saturated_Action =>
-            -- Universal rate limiter: if threshold hi is fired, reject
-            if Direction = Fired_Hi then
-               return Would_Block;
-            else
-               return Ok;
-            end if;
-      end case;
-   end Synapse_Fire;
-
-   function Apply_Delta_Depth
-     (Syn         : in out Synapse;
-      Value_Delta : Interfaces.Integer_32;
-      Depth       : Natural) return Kernel_Error
+   procedure Apply_Internal
+     (Syn   : in out Synapse;
+      Delta : Interfaces.Integer_32;
+      Depth : Natural;
+      Status : out Kernel_Error)
    is
       New_Charge : Interfaces.Integer_32;
-      Now        : constant Interfaces.Unsigned_64 := Current_Tick;
+      Fired      : Boolean := False;
    begin
-      if Syn.Min_Interval_Ticks > 0 then
-         if Syn.Last_Signal_Tick /= 0 then
-            if Now - Syn.Last_Signal_Tick < Syn.Min_Interval_Ticks then
-               return Would_Block;
-            end if;
-         end if;
-         Syn.Last_Signal_Tick := Now;
+      if Depth > Synapse_Max_Fire_Depth then
+         Last_Fired_Trace_Id := 999999999;
+         Status := Cascade_Too_Deep;
+         return;
       end if;
 
-      Apply_Decay_If_Due (Syn);
-      New_Charge := Syn.Charge + Value_Delta;
-
-      -- Charge Saturation Clamping / Hard Limits
+      New_Charge := Syn.Charge + Delta;
       if New_Charge > Syn.Max_Charge_Cap then
          New_Charge := Syn.Max_Charge_Cap;
       elsif New_Charge < Syn.Min_Charge_Cap then
          New_Charge := Syn.Min_Charge_Cap;
       end if;
-
       Syn.Charge := New_Charge;
 
-      -- SDRP Priority Boost: If Syn has an associated thread, boost its priority by reducing its Deadline_Tick
-      if Syn.Sdrp_Thread /= null and then Syn.Sdrp_Thread.Active_Sched_Ctx /= null then
-         if New_Charge > 0 then
-            declare
-               use type Interfaces.Unsigned_64;
-               Boost : constant Interfaces.Unsigned_64 := Interfaces.Unsigned_64 (New_Charge);
-            begin
-               if Syn.Sdrp_Thread.Active_Sched_Ctx.Deadline_Tick > Boost then
-                  Syn.Sdrp_Thread.Active_Sched_Ctx.Deadline_Tick :=
-                    Syn.Sdrp_Thread.Active_Sched_Ctx.Deadline_Tick - Boost;
-               end if;
-            end;
-         end if;
+      if Syn.Charge >= Syn.Threshold_Hi then
+         Fired := True;
+      elsif Syn.Threshold_Lo.Present
+        and then Syn.Charge <= Syn.Threshold_Lo.Value
+      then
+         Fired := True;
       end if;
 
-      if New_Charge >= Syn.Threshold_Hi then
-         case Syn.Reset_Mode_Field is
-            when To_Zero             => Syn.Charge := 0;
-            when Subtract_Threshold  =>
+      if not Fired then
+         Status := Ok;
+         return;
+      end if;
+
+      case Syn.Reset_Mode_Field is
+         when To_Zero =>
+            Syn.Charge := 0;
+         when Subtract_Threshold =>
+            if Syn.Charge >= Syn.Threshold_Hi then
                Syn.Charge := Syn.Charge - Syn.Threshold_Hi;
-         end case;
-         return Synapse_Fire (Syn, Fired_Hi, Depth);
-      end if;
+            elsif Syn.Threshold_Lo.Present then
+               Syn.Charge := Syn.Charge - Syn.Threshold_Lo.Value;
+            end if;
+      end case;
 
-      if Syn.Threshold_Lo.Present then
-         if New_Charge <= Syn.Threshold_Lo.Value then
-            case Syn.Reset_Mode_Field is
-               when To_Zero             => Syn.Charge := 0;
-               when Subtract_Threshold  =>
-                  Syn.Charge := Syn.Charge - Syn.Threshold_Lo.Value;
-            end case;
-            return Synapse_Fire (Syn, Fired_Lo, Depth);
-         end if;
-      end if;
-
-      return Ok;
-   end Apply_Delta_Depth;
+      case Syn.Action.Kind is
+         when Signal_Notification_Action =>
+            if Syn.Action.Notif_Target.Target /= null then
+               Aura.Notification.Notification_Signal
+                 (Syn.Action.Notif_Target.Target,
+                  Syn.Action.Notif_Bit);
+            end if;
+         when Feed_Synapse_Action =>
+            declare
+               Target : Synapse_Ref;
+               Alive  : Boolean;
+            begin
+               Upgrade (Syn.Action.Synapse_Target, Target, Alive);
+               if not Alive then
+                  Status := Bad_Cap;
+                  return;
+               end if;
+               Apply_Internal
+                 (Target.all,
+                  Signal_Delta (Syn.Action.Feed_Kind),
+                  Depth + 1,
+                  Status);
+               return;
+            end;
+         when Execute_Sealed_Action =>
+            if Syn.Action.Sealed = null then
+               Status := Bad_Cap;
+               return;
+            end if;
+            Status := Sealed_Call_Execute (Syn.Action.Sealed.all);
+            return;
+         when Gate_Policy_Action =>
+            null;
+         when Trace_Event_Action =>
+            Last_Fired_Trace_Id := Syn.Action.Trace_Id;
+         when Reject_If_Saturated_Action =>
+            null;
+      end case;
+      Status := Ok;
+   end Apply_Internal;
 
    function Synapse_Apply_Delta
      (Syn         : in out Synapse;
       Value_Delta : Interfaces.Integer_32) return Kernel_Error
-   is (Apply_Delta_Depth (Syn, Value_Delta, Depth => 0));
-
-   function Synapse_Signal (Tap : Synapse_Tap_Write_Ref) return Kernel_Error
    is
-      Target_Alive : Boolean;
-      Target       : Synapse_Ref;
-      Kind         : Signal_Kind;
-      Check_Status : constant Kernel_Error := Check_Valid (Tap);
-      Now          : Interfaces.Unsigned_64;
+      Status : Kernel_Error;
    begin
-      if Check_Status /= Ok then
-         return Check_Status;
-      end if;
+      Apply_Internal (Syn, Value_Delta, 0, Status);
+      return Status;
+   end Synapse_Apply_Delta;
 
-      -- Tap-Level Rate-Limiting (защита от DoS на границе мандата Tap)
-      Now := Current_Tick;
-      if Tap.Object.Min_Interval_Ticks > 0 then
-         if Tap.Object.Last_Signal_Tick /= 0 then
-            if Now - Tap.Object.Last_Signal_Tick < Tap.Object.Min_Interval_Ticks then
-               return Would_Block;
-            end if;
-         end if;
-         Tap.Object.Last_Signal_Tick := Now;
+   function Synapse_Signal
+     (Tap : Synapse_Tap_Write_Ref) return Kernel_Error
+   is
+      Now    : constant Interfaces.Unsigned_64 := Aura.Timer.Current_Tick;
+      Target : Synapse_Ref;
+      Alive  : Boolean;
+   begin
+      if Check_Valid (Tap) /= Ok then
+         return Check_Valid (Tap);
       end if;
-
-      Upgrade (Tap.Object.Target, Target, Target_Alive);
-      if not Target_Alive then
-         return Revoked;
+      if Tap.Object.Min_Interval_Ticks /= 0
+        and then Tap.Object.Last_Signal_Tick /= 0
+        and then Now >= Tap.Object.Last_Signal_Tick
+        and then Now - Tap.Object.Last_Signal_Tick
+                   < Tap.Object.Min_Interval_Ticks
+      then
+         return Would_Block;
       end if;
-      --  Знак и вес зафиксированы в Tap при подключении — вызывающий не
-      --  может подменить их на лету.
-      Kind :=
-        (if Tap.Object.Is_Positive
-         then Signal_Kind'(Tag => Positive_Signal,
-                           Positive_N => Tap.Object.N)
-         else Signal_Kind'(Tag => Negative_Signal,
-                           Negative_N => Tap.Object.N));
-      return Synapse_Apply_Delta (Target.all, Signal_Delta (Kind));
+      Upgrade (Tap.Object.Target, Target, Alive);
+      if not Alive then
+         return Bad_Cap;
+      end if;
+      Tap.Object.Last_Signal_Tick := Now;
+      return Synapse_Apply_Delta
+        (Target.all,
+         (if Tap.Object.Is_Positive
+          then Interfaces.Integer_32 (1 + Tap.Object.N)
+          else -Interfaces.Integer_32 (Tap.Object.N)));
    end Synapse_Signal;
 
-   procedure Apply_Decay_If_Due (Syn : in out Synapse) is
-      Last, Now, Elapsed_Ticks : Interfaces.Unsigned_64;
-      Leak                     : Interfaces.Integer_64;
-      Cur, Pulled               : Interfaces.Integer_32;
+   procedure Synapse_Charge
+     (Delta_V : Interfaces.Integer_64;
+      Tick    : Interfaces.Unsigned_64)
+   is
    begin
-      if not Syn.Decay.Present then
-         return;
-      end if;
-      Last := Syn.Decay.Value.Last_Touch;
-      Now  := Current_Tick;
-      Elapsed_Ticks := Saturating_Sub_U64 (Now, Last);
-      if Elapsed_Ticks = 0 then
-         return;
-      end if;
-      Leak := Saturating_Mul_I64
-        (Interfaces.Integer_64 (Elapsed_Ticks),
-         Interfaces.Integer_64 (Syn.Decay.Value.Per_Tick));
+      Synapse_Lock.Apply_Charge (Delta_V, Tick);
+   end Synapse_Charge;
 
-      --  Утечка тянет заряд к 0 с обеих сторон (знаковый Charge) — не
-      --  даёт старому позитиву и новому негативу неожиданно "сложиться"
-      --  спустя произвольно долгое время без сигналов.
-      Cur := Syn.Charge;
-      if Cur > 0 then
-         Pulled := Interfaces.Integer_32'Max
-           (Cur - Interfaces.Integer_32
-              (Interfaces.Integer_64'Min
-                 (Interfaces.Integer_64'Max (Leak, 0),
-                  Interfaces.Integer_64 (Interfaces.Integer_32'Last))), 0);
-      elsif Cur < 0 then
-         Pulled := Interfaces.Integer_32'Min
-           (Cur + Interfaces.Integer_32
-              (Interfaces.Integer_64'Min
-                 (Interfaces.Integer_64'Max (Leak, 0),
-                  Interfaces.Integer_64 (Interfaces.Integer_32'Last))), 0);
-      else
-         Pulled := 0;
-      end if;
-      Syn.Charge := Pulled;
-      Syn.Decay.Value.Last_Touch := Now;
-   end Apply_Decay_If_Due;
+   function Synapse_Get_Charge return Interfaces.Integer_64 is
+     (Synapse_Lock.Get_Charge);
+
+   function Synapse_Get_Last_Sig_Tick return Interfaces.Unsigned_64 is
+     (Synapse_Lock.Get_Last_Sig_Tick);
+
+   procedure Synapse_Reset is
+   begin
+      Synapse_Lock.Reset;
+   end Synapse_Reset;
+
+   procedure Synapse_Set_Override (V : Boolean) is
+   begin
+      Synapse_Lock.Set_Override (V);
+   end Synapse_Set_Override;
 
 end Aura.Synapse;

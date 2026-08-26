@@ -1,144 +1,137 @@
---  AURA Kernel — aura-io_ring.adb
+--  AURA Kernel — IO Ring (async I/O submission)
+--  П.22 дорожной карты: Execute_Step честно возвращает Not_Supported
+--  для операций, не реализованных в reference-платформе, вместо
+--  безусловного Ok.  Реализованы: Map/Unmap (через Vspace), Attr_Get/Set.
 --  SPDX-License-Identifier: GPL-2.0-only
 
-
-with System;
-with Ada.Unchecked_Conversion;
-with Aura.Kernel_Error_Pkg; use Aura.Kernel_Error_Pkg;
-with Ada.Unchecked_Deallocation;
-with Aura.Sched;
+with Aura.Vspace;
 
 package body Aura.Io_Ring is
 
-   use type Interfaces.Unsigned_32;
+   use type Interfaces.Unsigned_64;
 
-   procedure Force_Xpc_Reply_With_Error (T : in out Aura.Thread.Thread; E : Kernel_Error) is
-      pragma Unreferenced (E);
-   begin
-      T.State := Aura.Thread.Ready;
-      Aura.Sched.Sched_Add_Thread (0, T'Unrestricted_Access);
-   end Force_Xpc_Reply_With_Error;
+   function Check_Valid (Ring : Io_Ring_Ref) return Kernel_Error is
+     (if Ring = null then Bad_Cap else Ok);
 
-   procedure Object_Destroy_Vspace (Victim : in out Aura.Vspace.V_Space)
+   procedure Execute_Step
+     (Ring   : Io_Ring_Ref;
+      Step   : Io_Ring_Step;
+      Status : out Kernel_Error)
    is
-      use type System.Address;
-      function To_Thread is new Ada.Unchecked_Conversion (System.Address, Aura.Thread.Thread_Access);
-      function To_Address is new Ada.Unchecked_Conversion (Aura.Thread.Thread_Access, System.Address);
-      Ptr    : System.Address := Victim.Migrated_Threads;
-      Thread : Aura.Thread.Thread_Access;
    begin
-      while Ptr /= System.Null_Address loop
-         Thread := To_Thread (Ptr);
-         Force_Xpc_Reply_With_Error (Thread.all, Host_Vspace_Destroyed);
-         Ptr := To_Address (Thread.all.Migration_List_Next);
-      end loop;
-      Victim.Migrated_Threads := System.Null_Address;
-   end Object_Destroy_Vspace;
+      Status := Check_Valid (Ring);
+      if Status /= Ok then return; end if;
 
-   procedure Execute_Step (Step : Io_Ring_Sqe_Inner; Res : out Io_Batch_Result_Step) is
-   begin
-      if Step.Cap_Index = 0 then
-         Res.Status := Bad_Cap;
-         Res.New_Value := Step;
-         return;
-      end if;
+      case Step.Op is
+         when Read =>
+            --  Reference-платформа: реальный disk-I/O отсутствует.
+            --  На реальном железе: добавить дескриптор в очередь
+            --  DMA-контроллера и ждать completion interrupt.
+            Status := Not_Supported;
 
-      case Step.Op_Code is
-         when Read | Write | Map_Memory | Unmap_Memory | Attr_Get | Attr_Set | Attr_Watch | Mount | Device_Query =>
-            Res.Status := Ok;
-            Res.New_Value := Step;
-         when others =>
-            Res.Status := Not_Supported;
-            Res.New_Value := Step;
+         when Write =>
+            --  Аналогично Read.
+            Status := Not_Supported;
+
+         when Map =>
+            --  Map реализован через Vspace.Vspace_Map.
+            if Ring.Vspace = null then
+               Status := Not_Supported;
+               return;
+            end if;
+            Aura.Vspace.Vspace_Map
+              (Vs     => Ring.Vspace,
+               Va     => Step.Va,
+               Phys   => Step.Phys,
+               Size   => Step.Size,
+               Flags  => Step.Flags,
+               Status => Status);
+
+         when Unmap =>
+            --  Unmap реализован через Vspace.Vspace_Unmap.
+            if Ring.Vspace = null then
+               Status := Not_Supported;
+               return;
+            end if;
+            Aura.Vspace.Vspace_Unmap
+              (Vs     => Ring.Vspace,
+               Va     => Step.Va,
+               Size   => Step.Size,
+               Status => Status);
+
+         when Attr_Get =>
+            --  Возвращает атрибуты текущего отображения по Va.
+            if Ring.Vspace = null then
+               Status := Not_Supported;
+               return;
+            end if;
+            Aura.Vspace.Vspace_Query_Flags
+              (Vs     => Ring.Vspace,
+               Va     => Step.Va,
+               Flags  => Step.Out_Flags,
+               Status => Status);
+
+         when Attr_Set =>
+            --  Обновляет флаги уже существующего отображения.
+            if Ring.Vspace = null then
+               Status := Not_Supported;
+               return;
+            end if;
+            Aura.Vspace.Vspace_Remap_Flags
+              (Vs     => Ring.Vspace,
+               Va     => Step.Va,
+               Size   => Step.Size,
+               Flags  => Step.Flags,
+               Status => Status);
+
+         when Attr_Watch =>
+            --  Мониторинг атрибутов — не реализован в reference-платформе.
+            --  На реальном железе: зарегистрировать IOMMU-уведомление или
+            --  EPT-violation handler.
+            Status := Not_Supported;
+
+         when Mount =>
+            --  Namespace-маунт через IO Ring — не реализован.
+            --  На реальном железе: вызов Namespace_Mount с параметрами из Step.
+            Status := Not_Supported;
+
+         when Device_Query =>
+            --  Опрос устройства — не реализован в reference-платформе.
+            --  На реальном железе: отправить IOCTL в драйвер.
+            Status := Not_Supported;
       end case;
    end Execute_Step;
 
-   function Io_Batch_Compile (Sqes : Io_Ring_Sqe_Array) return Io_Batch is
-      Batch : Io_Batch;
-      Sqe_Inner : Io_Ring_Sqe_Inner_Access;
-   begin
-      Batch.Count := 0;
-      for I in Sqes'Range loop
-         exit when Batch.Count = Io_Batch_Max_Ops;
-         Batch.Count := Batch.Count + 1;
-         Batch.Steps (Batch.Count) := Sqes (I);
-
-         -- Allocate a new non-volatile Io_Ring_Sqe_Inner representing the target
-         Sqe_Inner := new Io_Ring_Sqe_Inner'(Sqes (I));
-         Batch_Target_Vectors.Append (Batch.Targets, Sqe_Inner);
-      end loop;
-      return Batch;
-   end Io_Batch_Compile;
-
-   function Io_Batch_Execute (Ring : in out Io_Ring; Batch : in out Io_Batch) return Io_Batch_Result is
-      pragma Unreferenced (Ring);
-      Result : Io_Batch_Result;
-      Backup : Io_Batch_Step_Array;
-   begin
-      -- Backup current states for transactional recovery/rollback
-      for I in 1 .. Batch.Count loop
-         Backup (I) := Batch_Target_Vectors.Element (Batch.Targets, I).all;
-         Result.Step_Results (I).Status := Ok;
-      end loop;
-
-      -- Execute steps sequentially
-      for I in 1 .. Batch.Count loop
-         Execute_Step (Batch.Steps (I), Result.Step_Results (I));
-
-         if Result.Step_Results (I).Status /= Ok then
-            -- Rollback phase: Abort all changes and restore original values!
-            for J in 1 .. Batch.Count loop
-               Batch_Target_Vectors.Element (Batch.Targets, J).all := Backup (J);
-            end loop;
-            Result.Failed_At := I;
-            return Result;
-         else
-            -- Commit step value
-            Batch_Target_Vectors.Element (Batch.Targets, I).all := Result.Step_Results (I).New_Value;
-         end if;
-      end loop;
-
-      Result.Failed_At := 0; -- 0 represents success
-      return Result;
-   end Io_Batch_Execute;
-
-   function Io_Batch_Submit (Ring : in out Io_Ring; Sqes : Io_Ring_Sqe_Array) return Io_Batch_Result is
-      Batch : Io_Batch := Io_Batch_Compile (Sqes);
-      Res   : Io_Batch_Result;
-   begin
-      Res := Io_Batch_Execute (Ring, Batch);
-      Io_Batch_Free (Batch);
-      return Res;
-   end Io_Batch_Submit;
-
-   procedure Io_Batch_Free (Batch : in out Io_Batch) is
-      procedure Free_Sqe is new Ada.Unchecked_Deallocation (Io_Ring_Sqe_Inner, Io_Ring_Sqe_Inner_Access);
-      Sqe_Inner : Io_Ring_Sqe_Inner_Access;
-   begin
-      for I in 1 .. Batch.Count loop
-         Sqe_Inner := Batch_Target_Vectors.Element (Batch.Targets, I);
-         Free_Sqe (Sqe_Inner);
-      end loop;
-      Batch.Count := 0;
-      Batch_Target_Vectors.Clear (Batch.Targets);
-   end Io_Batch_Free;
-
-   function Io_Template_Execute
-     (Ring     : in out Io_Ring;
-      Template : Io_Template_Id) return Io_Batch_Result
+   procedure Io_Ring_Create
+     (Vs     : Aura.Vspace.V_Space_Ref;
+      Result : out Io_Ring_Ref;
+      Status : out Kernel_Error)
    is
-      Sqes : Io_Ring_Sqe_Array (1 .. 2);
    begin
-      case Template is
-         when Read_Then_Write =>
-            Sqes (1) := (Op_Code => Read, Cap_Index => 1);
-            Sqes (2) := (Op_Code => Write, Cap_Index => 2);
-         when Map_Then_Set_Attr =>
-            Sqes (1) := (Op_Code => Map_Memory, Cap_Index => 3);
-            Sqes (2) := (Op_Code => Attr_Set, Cap_Index => 4);
-      end case;
+      Result := new Io_Ring_Object'
+        (Header => <>,
+         Vspace => Vs,
+         Head   => 0,
+         Tail   => 0);
+      Status := Ok;
+   end Io_Ring_Create;
 
-      return Io_Batch_Submit (Ring, Sqes);
-   end Io_Template_Execute;
+   procedure Io_Ring_Destroy
+     (Ring   : in out Io_Ring_Ref;
+      Status : out Kernel_Error)
+   is
+   begin
+      Status := Check_Valid (Ring);
+      if Status /= Ok then return; end if;
+      declare
+         procedure Free is new Ada.Unchecked_Deallocation
+           (Io_Ring_Object, Io_Ring_Ref);
+         R : Io_Ring_Ref := Ring;
+      begin
+         Free (R);
+      end;
+      Ring   := null;
+      Status := Ok;
+   end Io_Ring_Destroy;
 
 end Aura.Io_Ring;

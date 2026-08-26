@@ -13,13 +13,16 @@ package Aura.Namespace is
 
    pragma SPARK_Mode (Off);
 
-   type Cap_Any_Ref is access all Integer; -- Placeholder
+   type Cap_Object;
+   type Cap_Any_Ref is access all Cap_Object;
    type Namespace_Node_Inner;
    type Namespace_Node_Access is access all Namespace_Node_Inner;
    type Namespace_Node_Weak_Ref is access all Namespace_Node_Inner; -- Placeholder
 
-   type P_Union_Ref is access all Integer; -- Placeholder
-   type Device_Object_Ref is access all Integer; -- Placeholder
+   type P_Union;
+   type P_Union_Ref is access all P_Union;
+   type Device_Object;
+   type Device_Object_Ref is access all Device_Object;
 
    package Slot_Map_Placeholder is new Aura.Slot_Map (Integer);
    subtype Slot_Id is Slot_Map_Placeholder.Slot_Id;
@@ -118,5 +121,24 @@ package Aura.Namespace is
       Name       : String;
       Source     : Cap_Any_Ref;
       Status     : out Kernel_Error);
+
+   --  Привязать корневой узел Ns к контексту процесса Proc.
+   --  Реинкарнация вызывает это для каждого возрождённого процесса
+   --  (п.47 дорожной карты, Rebind_Namespace_Mounts).
+   --  Process_Context_Ref — forward-declaration совместима с Aura.Vspace.
+   type Process_Context;
+   type Process_Any_Ref is access all Process_Context;
+
+   procedure Namespace_Mount_Bind
+     (Proc   : Process_Any_Ref;
+      Ns     : Namespace_Node_Access;
+      Status : out Kernel_Error);
+
+private
+
+   type Cap_Object is limited null record;
+   type P_Union is limited null record;
+   type Device_Object is limited null record;
+   type Process_Context is limited null record;
 
 end Aura.Namespace;

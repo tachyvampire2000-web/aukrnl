@@ -13,10 +13,14 @@ package Aura.Rcu is
 
    use type Interfaces.Unsigned_64;
 
-   type Layer_Access is access all Integer; -- Placeholder
-   type Attr_Entry_Access is access all Integer; -- Placeholder
-   type Namespace_Node_Access is access all Integer; -- Placeholder
-   type Element_Access is access all Integer; -- Placeholder
+   type Layer;
+   type Layer_Access is access all Layer;
+   type Attr_Entry;
+   type Attr_Entry_Access is access all Attr_Entry;
+   type Namespace_Node;
+   type Namespace_Node_Access is access all Namespace_Node;
+   type Element;
+   type Element_Access is access all Element;
 
    subtype Cap_Object_Ref is System.Address; -- Placeholder
 
@@ -128,5 +132,12 @@ package Aura.Rcu is
    Global_Domain : aliased Rcu_Domain;
 
    function Rcu_Read_Lock_Held return Boolean is (Global_Domain.Readers_Count > 0) with Ghost;
+
+private
+
+   type Layer is limited null record;
+   type Attr_Entry is limited null record;
+   type Namespace_Node is limited null record;
+   type Element is limited null record;
 
 end Aura.Rcu;

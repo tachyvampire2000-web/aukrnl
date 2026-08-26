@@ -21,7 +21,8 @@ package Aura.Driver is
    package Name_Strings renames Aura.Namespace.Name_Strings;
 
 
-   type Device_Object_Ref is access all Integer; -- Placeholder
+   type Device_Object;
+   type Device_Object_Ref is access all Device_Object;
    type Device_Object_Ref_Option (Present : Boolean := False) is record
       case Present is
          when True  => Value : Device_Object_Ref;
@@ -49,7 +50,8 @@ package Aura.Driver is
    type Untyped_Region_Ref is access all Integer; -- Placeholder
    type Timer_Object_Read_Ref is access all Integer; -- Placeholder
 
-   type Prm_Resource_Set_Manage_Ref is access all Integer; -- Placeholder
+   type Prm_Resource_Set;
+   type Prm_Resource_Set_Manage_Ref is access all Prm_Resource_Set;
    subtype Process_Context_Ref is Aura.Vspace.Process_Context_Ref;
 
    type Execution_Context is access all Integer; -- Placeholder

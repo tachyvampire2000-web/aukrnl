@@ -9,7 +9,8 @@ package Aura.Object is
 
    pragma SPARK_Mode (On);
 
-   type Rcu_Domain_Access is access all Integer; -- Placeholder
+   type Rcu_Domain;
+   type Rcu_Domain_Access is access all Rcu_Domain;
 
    --  [fix-009] Epoch : Unsigned_32 (4 миллиарда revoke-циклов до overflow)
    --  [T45]    Min_Ring : минимальный уровень для доступа к объекту
@@ -26,5 +27,9 @@ package Aura.Object is
    type Kernel_Object is interface;
 
    function Header (Self : Kernel_Object) return Object_Header is abstract;
+
+private
+
+   type Rcu_Domain is limited null record;
 
 end Aura.Object;

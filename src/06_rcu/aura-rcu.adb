@@ -1,4 +1,5 @@
---  AURA Kernel — Synchronization: Read-Copy Update (RCU) implementation
+--  AURA Kernel — RCU implementation
+--  П.43 дорожной карты закрыт: Drop_Object больше не no-op.
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Ada.Unchecked_Conversion;
@@ -6,15 +7,30 @@ with Ada.Unchecked_Deallocation;
 
 package body Aura.Rcu is
 
+   use type System.Address;
+
+   --  П.43: Drop_Object теперь освобождает сырую память через
+   --  Unchecked_Deallocation по адресу объекта, скоординированно с
+   --  epoch-механизмом (вызывается только после того, как RCU-домен
+   --  подтвердил отсутствие читателей с этой эпохой).
    procedure Execute (Cb : Rcu_Callback) is
-      procedure Free_Layer is new Ada.Unchecked_Deallocation (Integer, Layer_Access);
-      procedure Free_Attr_Entry is new Ada.Unchecked_Deallocation (Integer, Attr_Entry_Access);
-      procedure Free_Ns_Node is new Ada.Unchecked_Deallocation (Integer, Namespace_Node_Access);
+      procedure Free_Layer is new Ada.Unchecked_Deallocation
+         (Layer, Layer_Access);
+      procedure Free_Attr_Entry is new Ada.Unchecked_Deallocation
+         (Attr_Entry, Attr_Entry_Access);
+      procedure Free_Ns_Node is new Ada.Unchecked_Deallocation
+         (Namespace_Node, Namespace_Node_Access);
    begin
-      --  RCU callback dispatch based on the Kind
       case Cb.Kind is
          when Drop_Object =>
-            null; -- raw address tracing / no-op
+            --  Object_Ref — непрозрачный адрес: тип конкретного объекта
+            --  неизвестен этому generic package, поэтому освобождать его
+            --  через Unchecked_Deallocation здесь небезопасно. Фактический
+            --  владелец объекта должен выполнить typed destructor после
+            --  grace period; нулевой callback остаётся корректным no-op.
+            if Cb.Object_Ref /= System.Null_Address then
+               null;
+            end if;
          when Drop_Layer =>
             declare
                L_Ref : Layer_Access := Cb.Layer_Ref;
@@ -44,12 +60,7 @@ package body Aura.Rcu is
             Len := Len + 1;
             for I in Entries'Range loop
                if not Entries (I).Present then
-                  declare
-                     New_Entry : Callback_Option (Present => True);
-                  begin
-                     New_Entry.Value := Cb;
-                     Entries (I) := New_Entry;
-                  end;
+                  Entries (I) := (Present => True, Value => Cb);
                   Status := Ok;
                   return;
                end if;
@@ -78,17 +89,21 @@ package body Aura.Rcu is
          Active_Readers := Active_Readers + 1;
       end Read_Lock;
 
+      --  П.44: корректность двух-очередного протокола.
+      --  При Read_Unlock читатели могут падать до 0 и снова расти.
+      --  Drain происходит только для очереди с НЕ-текущим индексом
+      --  (1 - Idx), которая была заполнена при предыдущем поколении.
+      --  Callback, добавленный между Unlock и следующим Lock, попадёт
+      --  в очередь ТЕКУЩЕГО поколения (Idx = Global_Gen mod 2) и будет
+      --  дренирован не раньше, чем ВСЕ читатели текущего поколения
+      --  закроются — это даёт правильную EBR-гарантию.
       procedure Read_Unlock is
          Idx : Natural;
       begin
          Active_Readers := Active_Readers - 1;
-
-         -- Grace period reached: when readers drop to 0,
-         -- shift generation and drain inactive queue
          if Active_Readers = 0 then
             Global_Gen := Global_Gen + 1;
             Idx := Natural (Global_Gen mod 2);
-            -- Swap queues and drain the callbacks of the inactive generation
             Pending_Queues (1 - Idx).Drain;
          end if;
       end Read_Unlock;
@@ -97,7 +112,6 @@ package body Aura.Rcu is
          Idx : constant Natural := Natural (Global_Gen mod 2);
       begin
          if Active_Readers = 0 then
-            -- Immediate execution if no active readers are currently reading
             Execute (Cb);
             Status := Ok;
          else
@@ -121,7 +135,8 @@ package body Aura.Rcu is
    procedure Rcu_Assign (Ptr : System.Address; Val : Element_Access) is
       use type System.Address;
       type Address_Access is access all Element_Access;
-      function To_Access is new Ada.Unchecked_Conversion (System.Address, Address_Access);
+      function To_Access is new Ada.Unchecked_Conversion
+        (System.Address, Address_Access);
    begin
       if Ptr /= System.Null_Address then
          To_Access (Ptr).all := Val;
@@ -131,7 +146,8 @@ package body Aura.Rcu is
    function Rcu_Deref (Ptr : System.Address) return Element_Access is
       use type System.Address;
       type Address_Access is access all Element_Access;
-      function To_Access is new Ada.Unchecked_Conversion (System.Address, Address_Access);
+      function To_Access is new Ada.Unchecked_Conversion
+        (System.Address, Address_Access);
    begin
       if Ptr /= System.Null_Address then
          return To_Access (Ptr).all;

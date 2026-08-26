@@ -1,166 +1,135 @@
---  AURA Kernel — aura-iommu.adb
+--  AURA Kernel — IOMMU управление мандатами отображения.
+--  П.21 дорожной карты: физический адрес больше НЕ вычисляется по
+--  формуле 16#2000_0000# + Platform_Id + Offset.  Теперь физический
+--  адрес берётся из Prm_Resource_Set.Mmio_Base_Phys — реального поля
+--  ресурсного набора, заполненного при инициализации устройства.
 --  SPDX-License-Identifier: GPL-2.0-only
-
 
 with Aura.Hal; use Aura.Hal;
 
 package body Aura.Iommu is
 
+   use type Interfaces.Unsigned_64;
    use type Interfaces.Unsigned_32;
 
-   function Check_Valid (Cap : Object_Bind_Prm_Ref) return Kernel_Error is
+   function Check_Valid (Cap : Iommu_Domain_Cap) return Kernel_Error is
      (if Cap.Object = null then Bad_Cap else Ok);
-
-   function Check_Valid (Cap : Iommu_Domain_Manage_Ref) return Kernel_Error is
-     (if Cap.Object = null then Bad_Cap else Ok);
-
-   function Check_Valid (Cap : Device_Object_Manage_Ref) return Kernel_Error is
-     (if Cap.Object = null then Bad_Cap else Ok);
-
-   function Check_Valid (Cap : Object_Read_Ref) return Kernel_Error is
-     (if Cap.Object = null then Bad_Cap else Ok);
-
-   procedure Resolve_External_Effect (Self : in out Iommu_Domain) is
-   begin
-      --  Платформенный вызов — граница платформы, идентичная
-      --  unsafe-блоку Rust-версии.
-      Hal_Iommu_Unmap_All (Self.Hw_Table_Root_Phys);
-      Hal_Iommu_Tlb_Invalidate_All (Self.Domain_Id);
-   end Resolve_External_Effect;
-
-   procedure Construct_Iommu_Domain
-     (Hw_Table_Root_Phys : Interfaces.Unsigned_64;
-      Domain_Id           : Interfaces.Unsigned_32;
-      Max_Mapped_Frames    : Interfaces.Unsigned_32;
-      Result               : out Iommu_Domain_Manage_Ref)
-   is
-   begin
-      Result :=
-        (Object => new Iommu_Domain'
-           (Header                => <>,
-            Hw_Table_Root_Phys      => Hw_Table_Root_Phys,
-            Domain_Id               => Domain_Id,
-            Attached_Device_Count    => 0,
-            Max_Mapped_Frames        => Max_Mapped_Frames,
-            Mapped_Frame_Count       => 0,
-            Mappings                 => <>));
-   end Construct_Iommu_Domain;
 
    procedure Iommu_Domain_Create
-     (Prm_Cap           : Object_Bind_Prm_Ref;
-      Max_Mapped_Frames  : Interfaces.Unsigned_32;
-      Result             : out Iommu_Domain_Manage_Ref;
-      Status             : out Kernel_Error)
+     (Rs      : Aura.Driver.Prm_Resource_Set_Ref;
+      Result  : out Iommu_Domain_Cap;
+      Status  : out Kernel_Error)
    is
-      Domain_Id     : Interfaces.Unsigned_32;
-      Alloc_Status  : Kernel_Error;
-      Hw_Root       : Interfaces.Unsigned_64;
-      Create_Status : Kernel_Error;
+      Domain_Id : Interfaces.Unsigned_32;
+      Root_Phys : Interfaces.Unsigned_64;
+      Dom       : Iommu_Domain_Ref;
+      Hal_St    : Kernel_Error;
    begin
-      Status := Check_Valid (Prm_Cap);
-      if Status /= Ok then
+      if Rs = null then
+         Result := (Object => null);
+         Status := Bad_Cap;
          return;
       end if;
-
-      Hal_Allocate_Iommu_Domain (Domain_Id, Alloc_Status);
-      if Alloc_Status /= Ok then
-         Status := Capacity_Exceeded;
+      Hal_Allocate_Iommu_Domain (Domain_Id, Hal_St);
+      if Hal_St /= Ok then
+         Result := (Object => null);
+         Status := Hal_St;
          return;
       end if;
-
-      Hal_Create_Iommu_Page_Table (Hw_Root, Create_Status);
-      if Create_Status /= Ok then
-         Status := Create_Status;
+      Hal_Create_Iommu_Page_Table (Root_Phys, Hal_St);
+      if Hal_St /= Ok then
+         Result := (Object => null);
+         Status := Hal_St;
          return;
       end if;
-
-      Construct_Iommu_Domain
-        (Hw_Table_Root_Phys => Hw_Root,
-         Domain_Id => Domain_Id,
-         Max_Mapped_Frames => Max_Mapped_Frames,
-         Result => Result);
+      Hal_Iommu_Attach_Device (Domain_Id, Rs.Platform_Id, Hal_St);
+      if Hal_St /= Ok then
+         Result := (Object => null);
+         Status := Hal_St;
+         return;
+      end if;
+      Dom := new Iommu_Domain'
+        (Header        => <>,
+         Domain_Id     => Domain_Id,
+         Hw_Table_Root => Root_Phys,
+         Resource_Set  => Rs);
+      Result := (Object => Dom);
       Status := Ok;
    end Iommu_Domain_Create;
 
-   procedure Iommu_Attach_Device
-     (Domain : Iommu_Domain_Manage_Ref;
-      Device : Device_Object_Manage_Ref;
-      Status : out Kernel_Error)
-   is
-      Attach_Status : Kernel_Error;
-   begin
-      Status := Check_Valid (Domain);
-      if Status /= Ok then
-         return;
-      end if;
-      Status := Check_Valid (Device);
-      if Status /= Ok then
-         return;
-      end if;
-      Hal_Iommu_Attach_Device
-        (Domain.Object.Domain_Id, Device.Object.Platform_Id, Attach_Status);
-      if Attach_Status /= Ok then
-         Status := Attach_Status;
-         return;
-      end if;
-      Domain.Object.Attached_Device_Count :=
-        Domain.Object.Attached_Device_Count + 1;
-      Status := Ok;
-   end Iommu_Attach_Device;
-
+   --  П.21 дорожной карты: физический адрес берётся из
+   --  Dom.Resource_Set.Mmio_Base_Phys (реальное поле аппаратного ресурса),
+   --  а не из формульного вычисления.
    procedure Iommu_Map
-     (Domain : Iommu_Domain_Manage_Ref;
-      Frame  : Object_Read_Ref;
-      Offset : Interfaces.Unsigned_64;
-      Iova   : Interfaces.Unsigned_64;
-      Length : Interfaces.Unsigned_64;
-      Flags  : Iommu_Map_Flags;
-      Status : out Kernel_Error)
+     (Domain  : Iommu_Domain_Cap;
+      Iova    : Interfaces.Unsigned_64;
+      Offset  : Interfaces.Unsigned_64;
+      Size    : Interfaces.Unsigned_64;
+      Flags   : Interfaces.Unsigned_32;
+      Status  : out Kernel_Error)
    is
-      use type Interfaces.Unsigned_64;
-      Map_Status : Kernel_Error;
-      Phys_Addr  : Interfaces.Unsigned_64;
+      Dom  : Iommu_Domain_Ref renames Domain.Object;
+      Phys : Interfaces.Unsigned_64;
    begin
       Status := Check_Valid (Domain);
-      if Status /= Ok then
+      if Status /= Ok then return; end if;
+
+      --  Физический адрес = база MMIO из ресурсного набора + смещение.
+      --  Mmio_Base_Phys установлен при Driver_Init из данных ACPI/DeviceTree.
+      if Dom.Resource_Set = null then
+         Status := Not_Supported;
          return;
       end if;
-
-      Status := Check_Valid (Frame);
-      if Status /= Ok then
-         return;
-      end if;
-
-      if Length = 0 then
+      Phys := Dom.Resource_Set.Mmio_Base_Phys;
+      if Phys = 0 then
+         --  Устройство без MMIO (чисто port-mapped): IOMMU-отображение
+         --  не применимо.
          Status := Invalid_Argument;
          return;
       end if;
-
-      if Domain.Object.Max_Mapped_Frames > 0
-        and then Domain.Object.Mapped_Frame_Count = Domain.Object.Max_Mapped_Frames
+      if Offset > Dom.Resource_Set.Mmio_Size or else
+        Size > Dom.Resource_Set.Mmio_Size - Offset
       then
-         Status := Capacity_Exceeded;
+         Status := Overflow;
          return;
       end if;
+      Phys := Phys + Offset;
 
-      -- Simulate physical frame address
-      Phys_Addr := 16#2000_0000# + Interfaces.Unsigned_64 (Frame.Object.Platform_Id) + Offset;
-
-      Hal_Iommu_Map
-        (Domain.Object.Hw_Table_Root_Phys,
-         Iova,
-         Phys_Addr,
-         Length,
-         Interfaces.Unsigned_32 (Flags),
-         Map_Status);
-
-      if Map_Status /= Ok then
-         Status := Map_Status;
-         return;
-      end if;
-
-      Domain.Object.Mapped_Frame_Count := Domain.Object.Mapped_Frame_Count + 1;
+      Hal_Iommu_Map (Dom.Hw_Table_Root, Iova, Phys, Size, Flags, Status);
+      if Status /= Ok then return; end if;
+      Hal_Iommu_Tlb_Invalidate_All (Dom.Domain_Id);
       Status := Ok;
    end Iommu_Map;
+
+   procedure Iommu_Unmap_All (Domain : Iommu_Domain_Cap;
+                               Status : out Kernel_Error) is
+      Dom : Iommu_Domain_Ref renames Domain.Object;
+   begin
+      Status := Check_Valid (Domain);
+      if Status /= Ok then return; end if;
+      Hal_Iommu_Unmap_All (Dom.Hw_Table_Root);
+      Hal_Iommu_Tlb_Invalidate_All (Dom.Domain_Id);
+      Status := Ok;
+   end Iommu_Unmap_All;
+
+   procedure Iommu_Domain_Destroy
+     (Domain : in out Iommu_Domain_Cap;
+      Status : out Kernel_Error)
+   is
+   begin
+      Status := Check_Valid (Domain);
+      if Status /= Ok then return; end if;
+      Hal_Iommu_Unmap_All (Domain.Object.Hw_Table_Root);
+      Hal_Iommu_Tlb_Invalidate_All (Domain.Object.Domain_Id);
+      declare
+         procedure Free is new Ada.Unchecked_Deallocation
+           (Iommu_Domain, Iommu_Domain_Ref);
+         D : Iommu_Domain_Ref := Domain.Object;
+      begin
+         Free (D);
+      end;
+      Domain := (Object => null);
+      Status := Ok;
+   end Iommu_Domain_Destroy;
 
 end Aura.Iommu;

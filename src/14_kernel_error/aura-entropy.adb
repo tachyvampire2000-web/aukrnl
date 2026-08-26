@@ -1,70 +1,75 @@
---  AURA Kernel — Entropy budget implementation
+--  AURA Kernel — Entropy pool implementation
 --  SPDX-License-Identifier: GPL-2.0-only
 
-
 with System;
-with Aura.Hal;
 
 package body Aura.Entropy is
 
-   function Check_Valid (Cap : Object_Bind_Prm_Ref) return Kernel_Error is
+   use type Interfaces.Unsigned_64;
+
+   Pool_Value : aliased Interfaces.Unsigned_64 := 16#DEAD_BEEF_CAFE_0042#;
+   Pool_Bits  : Natural := 64;
+
+   protected Entropy_Lock is
+      pragma Interrupt_Priority (System.Interrupt_Priority'Last);
+      procedure Feed (Data : Interfaces.Unsigned_64; Bits : Natural);
+      procedure Consume (N       : Natural;
+                         Value   : out Interfaces.Unsigned_64;
+                         Actual  : out Natural);
+      function Level return Natural;
+   end Entropy_Lock;
+
+   protected body Entropy_Lock is
+
+      procedure Feed (Data : Interfaces.Unsigned_64; Bits : Natural) is
+         Rot : constant Natural := Bits mod 64;
+         Shifted : Interfaces.Unsigned_64;
+      begin
+         Shifted := Interfaces.Rotate_Left (Data, Rot);
+         Pool_Value := Pool_Value xor Shifted;
+         Pool_Bits  := Natural'Min (Pool_Bits + Bits, 256);
+      end Feed;
+
+      procedure Consume
+        (N       : Natural;
+         Value   : out Interfaces.Unsigned_64;
+         Actual  : out Natural)
+      is
+      begin
+         if Pool_Bits = 0 then
+            Value  := Pool_Value;
+            Actual := 0;
+            return;
+         end if;
+         Actual     := Natural'Min (N, Pool_Bits);
+         Value      := Pool_Value;
+         Pool_Value := Interfaces.Rotate_Left (Pool_Value, 13)
+                         xor 16#6C62_272E_07BB_0142#;
+         if Pool_Bits >= Actual then
+            Pool_Bits := Pool_Bits - Actual;
+         else
+            Pool_Bits := 0;
+         end if;
+      end Consume;
+
+      function Level return Natural is (Pool_Bits);
+
+   end Entropy_Lock;
+
+   procedure Entropy_Feed (Data : Interfaces.Unsigned_64; Bits : Natural) is
    begin
-      if Cap = null then
-         return Bad_Cap;
-      else
-         return Ok;
-      end if;
-   end Check_Valid;
+      Entropy_Lock.Feed (Data, Bits);
+   end Entropy_Feed;
 
    procedure Entropy_Consume
-     (Bytes : Interfaces.Unsigned_64; Status : out Kernel_Error)
+     (N           : Natural;
+      Value       : out Interfaces.Unsigned_64;
+      Actual_Bits : out Natural)
    is
-      Cur    : Interfaces.Unsigned_64;
-      Cas_Ok : Boolean;
    begin
-      loop
-         Cur := Entropy_Budget;
-         if Cur < Bytes then
-            Status := Entropy_Exhausted;
-            return;
-         end if;
-         Aura.Hal.Atomic_Compare_Exchange_U64
-           (Entropy_Budget'Address, Cur, Cur - Bytes, Cas_Ok);
-         if Cas_Ok then
-            Status := Ok;
-            return;
-         end if;
-      end loop;
+      Entropy_Lock.Consume (N, Value, Actual_Bits);
    end Entropy_Consume;
 
-   procedure Entropy_Replenish (Bytes : Interfaces.Unsigned_64) is
-      Cur, Next : Interfaces.Unsigned_64;
-      Cas_Ok    : Boolean;
-   begin
-      loop
-         Cur  := Entropy_Budget;
-         Next := Interfaces.Unsigned_64'Min
-           (Saturating_Add_U64 (Cur, Bytes), Entropy_Budget_Max);
-         Aura.Hal.Atomic_Compare_Exchange_U64
-           (Entropy_Budget'Address, Cur, Next, Cas_Ok);
-         if Cas_Ok then
-            return;
-         end if;
-      end loop;
-   end Entropy_Replenish;
-
-   procedure Entropy_Feed
-     (Caller_Cap : Object_Bind_Prm_Ref;
-      Bytes      : Interfaces.Unsigned_64;
-      Status     : out Kernel_Error)
-   is
-   begin
-      Status := Check_Valid (Caller_Cap);
-      if Status /= Ok then
-         return;
-      end if;
-      Entropy_Replenish (Bytes);
-      Status := Ok;
-   end Entropy_Feed;
+   function Entropy_Level return Natural is (Entropy_Lock.Level);
 
 end Aura.Entropy;
