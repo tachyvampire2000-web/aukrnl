@@ -10,6 +10,7 @@ with Aura.Rights;           use Aura.Rights;
 with Aura.Ticket_Lock;
 with Aura.Wait_Queue;
 with Aura.Notification;
+with Aura.Mac;
 
 package Aura.Channel is
 
@@ -76,9 +77,12 @@ package Aura.Channel is
    type Channel_Side is (Side_A, Side_B);
 
    type Channel_Endpoint is limited record
-      Header  : Object_Header;
-      Channel : Channel_Ref;
-      Side    : Channel_Side := Side_A;
+      Header    : Object_Header;
+      Channel   : Channel_Ref;
+      Side      : Channel_Side := Side_A;
+      --  П.33 дорожной карты: MAC-метка владельца конечной точки (Biba).
+      --  Используется в Channel_Send для Mac_Check_Ipc.
+      Mac_Level : Aura.Mac.Integrity_Level := 0;
    end record;
 
    type Channel_Endpoint_Access is access all Channel_Endpoint;

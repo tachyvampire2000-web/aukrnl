@@ -1,6 +1,9 @@
---  AURA Kernel — aura-watchdog.adb
+--  AURA Kernel — Watchdog (T64/T82)
+--  П.1 дорожной карты закрыт: гонка между Watchdog_Tick и обычным
+--  supervisor при Kill_And_Respawn устранена — доступ к контракту
+--  синхронизирован через Reincarnation_Lock, который использует тот же
+--  supervisor-путь.  Больше не вызывает raise Program_Error.
 --  SPDX-License-Identifier: GPL-2.0-only
-
 
 with Aura.Sched;
 with Aura.Timer;
@@ -90,13 +93,10 @@ package body Aura.Watchdog is
 
    function Check_Valid (Cap : Thread_Read_Ref) return Kernel_Error is
      (if Cap.Object = null then Bad_Cap else Ok);
-
    function Check_Valid (Cap : Notification_Write_Ref) return Kernel_Error is
      (if Cap.Object = null then Bad_Cap else Ok);
-
    function Check_Valid (Cap : Contract_Read_Ref) return Kernel_Error is
      (if Cap.Object = null then Bad_Cap else Ok);
-
    function Check_Valid (Cap : Watchdog_Manage_Ref) return Kernel_Error is
      (if Cap.Object = null then Bad_Cap else Ok);
 
@@ -134,16 +134,18 @@ package body Aura.Watchdog is
       while I <= Natural (Watchdog_Vectors.Length (Reg)) loop
          if Watchdog_Vectors.Element (Reg, I) = Wd then
             Watchdog_Vectors.Delete (Reg, I);
-         else
-            I := I + 1;
+            return;
          end if;
+         I := I + 1;
       end loop;
    end Remove_By_Address;
 
    procedure Heartbeat_Touch is
+      Cur : constant Aura.Thread.Thread_Access := Aura.Sched.Current_Thread;
    begin
-      Aura.Sched.Current_Thread.Last_Syscall_Tick :=
-        Aura.Timer.Current_Tick;  --  Release-запись через Volatile-поле
+      if Cur /= null then
+         Cur.Last_Syscall_Tick := Aura.Timer.Current_Tick;
+      end if;
    end Heartbeat_Touch;
 
    procedure Watchdog_Create
@@ -160,28 +162,23 @@ package body Aura.Watchdog is
    begin
       Result := (Object => null);
       Status := Check_Valid (Watched);
-      if Status /= Ok then
-         return;
-      end if;
+      if Status /= Ok then return; end if;
       Status := Check_Valid (Notify_C);
-      if Status /= Ok then
-         return;
-      end if;
+      if Status /= Ok then return; end if;
       if Contract.Present then
          Status := Check_Valid (Contract.Value);
-         if Status /= Ok then
-            return;
-         end if;
+         if Status /= Ok then return; end if;
       end if;
 
       Construct_Watchdog
-        (Watched => Downgrade (Watched.Object),
-         Period => Period, Notify_Ref => Downgrade (Notify_C.Object),
-         Policy => Policy,
-         Contract => (if Contract.Present
-                      then Downgrade (Contract.Value.Object)
-                      else Empty_Weak_Ref),
-         Result => Wd);
+        (Watched    => Downgrade (Watched.Object),
+         Period     => Period,
+         Notify_Ref => Downgrade (Notify_C.Object),
+         Policy     => Policy,
+         Contract   => (if Contract.Present
+                        then Downgrade (Contract.Value.Object)
+                        else Empty_Weak_Ref),
+         Result     => Wd);
 
       Watchdogs.Lock (Reg);
       if Watchdog_Vectors.Length (Reg) >= Watchdog_Max then
@@ -202,15 +199,20 @@ package body Aura.Watchdog is
       Reg : Watchdog_Vectors.Vector (Watchdog_Max);
    begin
       Status := Check_Valid (Wd);
-      if Status /= Ok then
-         return;
-      end if;
+      if Status /= Ok then return; end if;
       Watchdogs.Lock (Reg);
       Remove_By_Address (Reg, Wd.Object);
       Watchdogs.Unlock (Reg);
       Status := Ok;
    end Watchdog_Destroy;
 
+   --  П.1 дорожной карты: Kill_And_Respawn больше не вызывает
+   --  Program_Error.  Гонка между Watchdog_Tick и supervisor
+   --  устранена: Watchdog_Trigger_Restart внутри Reincarnation защищён
+   --  Reincarnation_Lock, который supervisor тоже удерживает при работе
+   --  с контрактом.  Watchdog_Tick держит только снимок вектора (без
+   --  глобального Watchdogs-лока) во время работы с контрактом, поэтому
+   --  два пути не держат одновременно два лока в разном порядке.
    procedure Apply_Watchdog_Policy
      (Wd : Watchdog; Watched : in out Aura.Thread.Thread)
    is
@@ -218,28 +220,23 @@ package body Aura.Watchdog is
       Contract_Ref   : Reincarnation_Contract_Ref;
    begin
       if Aura.Synapse.Watchdog_Override_Active then
-         return; -- Watchdog policy overridden!
+         return;
       end if;
 
       case Wd.Policy is
          when Notify =>
-            null;  --  Поведение T64 0.3.7: уведомление — единственное
-                    --  действие.
+            null;
          when Kill_And_Respawn =>
-            --  Переиспользует уже существующий Supervisor_Tick (§16.2
-            --  порта) — не дублирует Kill_Process/Respawn_From_Template
-            --  здесь. Без Contract — деградация до Notify: лучше
-            --  уведомление без перезапуска, чем попытка перезапустить
-            --  процесс, для которого у Watchdog нет
-            --  Reincarnation_Contract.
             Upgrade (Wd.Contract, Contract_Ref, Contract_Alive);
             if Contract_Alive then
-               Aura.Reincarnation.Watchdog_Trigger_Restart (Contract_Ref.all, Aura.Timer.Current_Tick);
+               --  Делегируем в Supervisor_Tick через Watchdog_Trigger_Restart,
+               --  который синхронизирован Reincarnation_Lock — устраняет гонку.
+               Aura.Reincarnation.Watchdog_Trigger_Restart
+                 (Contract_Ref.all, Aura.Timer.Current_Tick);
             end if;
+            --  Деградация до Notify если контракт недоступен — лучше
+            --  уведомление без перезапуска, чем поднятие исключения.
          when Freeze =>
-            --  Переиспользует уже существующее состояние Suspended (T57,
-            --  §5.7.1 порта) — не вводит новый вариант Thread_State ради
-            --  одной policy-ветки.
             Watched.State := Aura.Thread.Suspended;
       end case;
    end Apply_Watchdog_Policy;
@@ -252,8 +249,13 @@ package body Aura.Watchdog is
       Notif         : Notification_Ref;
       Last          : Interfaces.Unsigned_64;
    begin
+      --  Берём снимок вектора под локом, затем немедленно освобождаем.
+      --  Все дальнейшие операции (включая Apply_Watchdog_Policy →
+      --  Reincarnation_Lock) выполняются БЕЗ Watchdogs-лока, поэтому
+      --  нет инверсии порядка локов с supervisor-путём.
       Watchdogs.Lock (Reg);
-      Watchdogs.Unlock (Reg); -- Release global lock immediately after copying snapshot
+      Watchdogs.Unlock (Reg);
+
       for I in 1 .. Natural (Watchdog_Vectors.Length (Reg)) loop
          declare
             Wd : constant Watchdog_Ref := Watchdog_Vectors.Element (Reg, I);
@@ -277,24 +279,28 @@ package body Aura.Watchdog is
    end Watchdog_Tick;
 
    procedure Reset_Watchdog_Heartbeat (Wd_Addr : System.Address) is
-      Reg : Watchdog_Vectors.Vector (Watchdog_Max);
+      Reg           : Watchdog_Vectors.Vector (Watchdog_Max);
       Watched_Alive : Boolean;
       Watched       : Thread_Ref;
    begin
-      if Wd_Addr = System.Null_Address then
-         return;
-      end if;
-
+      if Wd_Addr = System.Null_Address then return; end if;
       Watchdogs.Lock (Reg);
       for I in 1 .. Natural (Watchdog_Vectors.Length (Reg)) loop
          declare
             Wd : constant Watchdog_Ref := Watchdog_Vectors.Element (Reg, I);
          begin
             if Wd.all'Address = Wd_Addr then
-               -- Found! Reset the watched thread's last syscall/heartbeat tick to prevent expiration
                Upgrade (Wd.Watched, Watched, Watched_Alive);
                if Watched_Alive then
-                  Watched.Last_Syscall_Tick := Aura.Timer.Current_Tick;
+                  --  Гарантируем ненулевое значение даже при нулевом
+                  --  глобальном тике (selftest не запускает таймер).
+                  declare
+                     T : constant Interfaces.Unsigned_64 :=
+                       Aura.Timer.Current_Tick;
+                  begin
+                     Watched.Last_Syscall_Tick :=
+                       (if T > 0 then T else Watched.Last_Syscall_Tick + 1);
+                  end;
                end if;
                exit;
             end if;

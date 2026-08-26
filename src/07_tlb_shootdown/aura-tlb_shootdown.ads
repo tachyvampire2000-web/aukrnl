@@ -1,8 +1,11 @@
---  AURA Kernel — aura-tlb_shootdown.ads
+--  AURA Kernel — TLB Shootdown specification
+--  П.41 дорожной карты: добавлен глобальный Shootdown_Lock вокруг пути
+--  IPI-рассылка→ожидание ACK для защиты от нескольких одновременных
+--  инициаторов, пишущих в один Pending_Shootdowns(Cpu).
 --  SPDX-License-Identifier: GPL-2.0-only
 
-
 with Interfaces;
+with System;
 
 package Aura.Tlb_Shootdown is
 
@@ -10,40 +13,37 @@ package Aura.Tlb_Shootdown is
 
    use type Interfaces.Unsigned_64;
 
-   Max_Cpus : constant := 256;  --  платформенно-зависимая константа,
-                                  --  соответствует Rust MAX_CPUS
+   Max_Cpus : constant := 256;
 
    type Tlb_Shootdown_Slot is record
       Vspace_Root : aliased Interfaces.Unsigned_64 := 0;
       Start_Va    : aliased Interfaces.Unsigned_64 := 0;
       Size        : aliased Interfaces.Unsigned_64 := 0;
       Active      : aliased Boolean := False;
-      --  T71: ACK от целевого CPU (каждый слот принадлежит одному CPU).
       Acked       : aliased Boolean := False;
    end record
      with Volatile;
 
-   --  T68: per-CPU массив — каждый CPU имеет свой слот, нет конфликтов.
-   --  Доступ к Slots (Cpu) только через запрашивающий (write) и целевой
-   --  (read/ack) CPU — внешнее условие, идентичное doc-комментарию
-   --  Rust-версии (там же: только SAFETY-комментарий, не проверяемое
-   --  компилятором условие; здесь то же самое отсутствие проверки, честно
-   --  сохранённое, а не выданное за большую гарантию).
    Pending_Shootdowns : array (0 .. Max_Cpus - 1) of Tlb_Shootdown_Slot;
 
-   --  T71: максимальное число итераций ожидания ACK (~1 мс при 1 ГГц).
    Shootdown_Timeout_Iters : constant := 1_000_000;
 
-   --  T71: деградировавшие CPU — биты выставляются при таймауте shootdown.
    Degraded_Cpus : aliased Interfaces.Unsigned_64 := 0;
 
+   --  П.41: глобальный лок для сериализации нескольких одновременных
+   --  инициаторов shootdown.  Только один путь может выполнять
+   --  IPI-рассылка→ожидание ACK в один момент времени.
+   protected Shootdown_Lock is
+      pragma Interrupt_Priority (System.Interrupt_Priority'Last);
+      entry Acquire;
+      procedure Release;
+   private
+      Locked : Boolean := False;
+   end Shootdown_Lock;
 
-   --  Вызывается из IPI ISR на целевом CPU — читает только свой слот.
    procedure Tlb_Shootdown_Handler
    with Export, Convention => C;
 
-
-   --  T71: проверить деградацию CPU (для supervisor/health monitor).
    function Cpu_Is_Degraded (Cpu : Natural) return Boolean is
      ((Degraded_Cpus and Interfaces.Shift_Left (1, Cpu)) /= 0);
 

@@ -1,12 +1,86 @@
---  AURA Kernel — aura-untyped.adb
+--  AURA Kernel — Untyped memory allocator
+--  П.40 дорожной карты: TOCTOU в Try_Reserve_Range устранён —
+--  dry-run и commit объединены в одну атомарную операцию под защитой
+--  Region_Lock (protected-объект).
 --  SPDX-License-Identifier: GPL-2.0-only
 
 with Ada.Containers;
+with System;
 
 package body Aura.Untyped is
 
    use type Interfaces.Unsigned_32;
    use type Ada.Containers.Count_Type;
+
+   --  П.40: защищённый объект сериализует резервирование гранул.
+   --  Потолочный приоритет Interrupt_Priority'Last предотвращает
+   --  прерывание timer-обработчиком в середине операции.
+   protected Region_Lock is
+      pragma Interrupt_Priority (System.Interrupt_Priority'Last);
+      procedure Reserve_Atomic
+        (Region : in out Untyped_Region;
+         Offset : Interfaces.Unsigned_64;
+         Total  : Interfaces.Unsigned_64;
+         Status : out Kernel_Error);
+   end Region_Lock;
+
+   protected body Region_Lock is
+      procedure Reserve_Atomic
+        (Region : in out Untyped_Region;
+         Offset : Interfaces.Unsigned_64;
+         Total  : Interfaces.Unsigned_64;
+         Status : out Kernel_Error)
+      is
+         First_G : constant Interfaces.Unsigned_64 :=
+           Offset / Alloc_Granule_Bytes;
+         Count_G : constant Interfaces.Unsigned_64 :=
+           (Total + Alloc_Granule_Bytes - 1) / Alloc_Granule_Bytes;
+         G    : Interfaces.Unsigned_64;
+         W    : Positive;
+         B    : Natural;
+         Word : Interfaces.Unsigned_64;
+         Mask : Interfaces.Unsigned_64;
+         Bitmap : Bitmap_Vectors.Vector (Untyped_Bitmap_Words_Max)
+           := Region.Allocated_Bitmap;
+      begin
+         --  Под одним локом: и dry-run, и commit — устраняет TOCTOU.
+         for I in 0 .. Count_G - 1 loop
+            G := First_G + I;
+            W := Natural (G / 64) + 1;
+            B := Natural (G mod 64);
+            if W > Untyped_Bitmap_Words_Max then
+               Status := Out_Of_Memory;
+               return;
+            end if;
+            Word := (if Ada.Containers.Count_Type (W)
+                          <= Bitmap_Vectors.Length (Bitmap)
+                     then Bitmap_Vectors.Element (Bitmap, W)
+                     else 0);
+            Mask := Interfaces.Shift_Left (1, B);
+            if (Word and Mask) /= 0 then
+               Status := Already_Exists;
+               return;
+            end if;
+         end loop;
+
+         for I in 0 .. Count_G - 1 loop
+            G := First_G + I;
+            W := Natural (G / 64) + 1;
+            B := Natural (G mod 64);
+            while Bitmap_Vectors.Length (Bitmap)
+                    < Ada.Containers.Count_Type (W) loop
+               Bitmap_Vectors.Append (Bitmap, 0);
+            end loop;
+            Word := Bitmap_Vectors.Element (Bitmap, W);
+            Mask := Interfaces.Shift_Left (1, B);
+            Word := Word or Mask;
+            Bitmap_Vectors.Replace_Element (Bitmap, W, Word);
+         end loop;
+
+         Region.Allocated_Bitmap := Bitmap;
+         Status := Ok;
+      end Reserve_Atomic;
+   end Region_Lock;
 
    procedure Try_Reserve_Range
      (Region : in out Untyped_Region;
@@ -14,71 +88,14 @@ package body Aura.Untyped is
       Total  : Interfaces.Unsigned_64;
       Status : out Kernel_Error)
    is
-      First_G : constant Interfaces.Unsigned_64 := Offset / Alloc_Granule_Bytes;
-      Count_G : constant Interfaces.Unsigned_64 :=
-        (Total + Alloc_Granule_Bytes - 1) / Alloc_Granule_Bytes;
-
-      G           : Interfaces.Unsigned_64;
-      W           : Positive;
-      B           : Natural;
-      Word        : Interfaces.Unsigned_64;
-      Mask        : Interfaces.Unsigned_64;
-
-      -- Copy to local non-volatile vector to satisfy Ada RM C.6(12) volatile restrictions
-      Bitmap      : Bitmap_Vectors.Vector (Untyped_Bitmap_Words_Max) := Region.Allocated_Bitmap;
    begin
       if Total = 0 then
          Status := Invalid_Argument;
          return;
       end if;
-
-      -- 1. Dry run: Verify all granules in the range are free
-      for I in 0 .. Count_G - 1 loop
-         G := First_G + I;
-         -- 0-based word, converted to 1-based Positive index for Bounded_Vectors
-         W := Natural (G / 64) + 1;
-         B := Natural (G mod 64);
-
-         -- Word bounds check against bitmap words maximum
-         if W > Untyped_Bitmap_Words_Max then
-            Status := Out_Of_Memory;
-            return;
-         end if;
-
-         -- Get word or default to 0 if we haven't allocated it yet
-         Word := (if Ada.Containers.Count_Type (W) <= Bitmap_Vectors.Length (Bitmap)
-                  then Bitmap_Vectors.Element (Bitmap, W)
-                  else 0);
-
-         Mask := Interfaces.Shift_Left (1, B);
-         if (Word and Mask) /= 0 then
-            Status := Already_Exists; -- Granule already allocated
-            return;
-         end if;
-      end loop;
-
-      -- 2. Commit phase: Set all granules in the range as allocated
-      for I in 0 .. Count_G - 1 loop
-         G := First_G + I;
-         W := Natural (G / 64) + 1;
-         B := Natural (G mod 64);
-
-         -- Pad bitmap vector up to index W if necessary
-         while Bitmap_Vectors.Length (Bitmap) < Ada.Containers.Count_Type (W) loop
-            Bitmap_Vectors.Append (Bitmap, 0);
-         end loop;
-
-         Word := Bitmap_Vectors.Element (Bitmap, W);
-         Mask := Interfaces.Shift_Left (1, B);
-         Word := Word or Mask;
-
-         Bitmap_Vectors.Replace_Element (Bitmap, W, Word);
-      end loop;
-
-      -- Write back to the volatile field
-      Region.Allocated_Bitmap := Bitmap;
-
-      Status := Ok;
+      --  П.40: делегируем в защищённую процедуру — атомарное
+      --  check-and-set без TOCTOU-окна.
+      Region_Lock.Reserve_Atomic (Region, Offset, Total, Status);
    end Try_Reserve_Range;
 
    procedure Untyped_Retype
@@ -96,8 +113,6 @@ package body Aura.Untyped is
          Status := Bad_Cap;
          return;
       end if;
-
-      -- checked_mul -> check overflow before multiplication
       Overflowed := Count /= 0
         and then Obj_Size > Interfaces.Unsigned_64'Last / Count;
       if Overflowed then
@@ -105,18 +120,15 @@ package body Aura.Untyped is
          return;
       end if;
       Total_Size := Count * Obj_Size;
-
       if Cap.Object.Size_Bits >= 64 then
          Region_Size := Interfaces.Unsigned_64'Last;
       else
          Region_Size := Interfaces.Shift_Left (1, Natural (Cap.Object.Size_Bits));
       end if;
-
       if Offset > Region_Size or else Total_Size > Region_Size - Offset then
          Status := Overflow;
          return;
       end if;
-
       Try_Reserve_Range (Cap.Object.all, Offset, Total_Size, Status);
    end Untyped_Retype;
 

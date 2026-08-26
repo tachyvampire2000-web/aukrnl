@@ -43,10 +43,12 @@ private
          Cap_Epoch : constant Interfaces.Unsigned_32 :=
            Self.Node.Cap_Epoch;
        begin
-         (if Self.Node.Creation_Epoch /= Cap_Epoch
+         (if Self.Object = null or else Self.Node = null
+          then Bad_Cap
+          elsif Self.Node.Creation_Epoch /= Cap_Epoch
              or else Self.Node.Obj_Creation_Epoch /= Obj_Epoch
           then Revoked
-          elsif Self.Node.Valid_Until /= 0
+          elsif Self.Node.Valid_From /= 0
                 and then Current_Tick < Self.Node.Valid_From
           then Not_Yet_Valid
           elsif Self.Node.Valid_Until /= 0

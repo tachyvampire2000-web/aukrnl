@@ -88,4 +88,12 @@ package Aura.Reincarnation is
       New_Template : Cap_Any_Ref;
       Status       : out Kernel_Error);
 
+   --  Callback для сброса heartbeat ассоциированного watchdog.
+   --  Устанавливается при инициализации Aura.Watchdog (избегает
+   --  циклической зависимости Reincarnation ↔ Watchdog).
+   type Watchdog_Reset_Fn is
+     access procedure (Wd_Addr : System.Address);
+
+   Watchdog_Reset_Hook : Watchdog_Reset_Fn := null;
+
 end Aura.Reincarnation;

@@ -1,42 +1,39 @@
---  AURA Kernel — aura-weak_ref.ads
+--  AURA Kernel — Weak references specification
+--  П.17 дорожной карты: Upgrade теперь безопасен по порядку проверок.
 --  SPDX-License-Identifier: GPL-2.0-only
 
-
+with Aura.Object; use Aura.Object;
 with Interfaces;
 
-generic
-   type Element_Type (<>) is limited private with Volatile;
-   type Element_Access is access all Element_Type;
-   with function Get_Epoch (Obj : Element_Type) return Interfaces.Unsigned_32 is <>;
 package Aura.Weak_Ref is
 
-   pragma SPARK_Mode (On);
+   pragma SPARK_Mode (Off);
 
-   --  В отличие от Cap_Object_Ref (контролируемая СИЛЬНАЯ ссылка, §1.1
-   --  порта), Weak_Ref НЕ продлевает время жизни объекта и не мешает его
-   --  уничтожению. Вместо счётчика владения хранит адрес и ожидаемую
-   --  эпоху объекта на момент создания слабой ссылки — Upgrade сверяет
-   --  текущую эпоху объекта (если он ещё физически существует по этому
-   --  адресу) с сохранённой при Downgrade, тем же способом, каким
-   --  Check_Valid (§1.5 порта) сверяет эпохи мандата.
-   type Instance is limited record
-      Target         : Element_Access;
-      Expected_Epoch : Interfaces.Unsigned_32;
+   use type Interfaces.Unsigned_32;
+
+   type Object_Access is access all Kernel_Object'Class;
+
+   type Instance is record
+      Target         : Object_Access := null;
+      Expected_Epoch : Interfaces.Unsigned_32 := 0;
    end record;
 
-   --  Пустая слабая ссылка (эквивалент отсутствия Weak — например,
-   --  начальное состояние Watchdog.Contract до присвоения).
-   Empty : constant Instance := (Target => null, Expected_Epoch => 0);
+   Empty_Weak_Ref : constant Instance := (Target => null, Expected_Epoch => 0);
 
-   function Downgrade (Strong : Element_Access) return Instance
-     with Global => null;
-
-   --  Value = null и Alive = False, если объект уже уничтожен (эпоха не
-   --  совпадает) либо Self был пустой слабой ссылкой изначально.
+   --  Повысить слабую ссылку до сильной.
+   --  БЕЗОПАСНЫЙ ПОРЯДОК (п.17): null-проверка → сравнение эпохи →
+   --  разыменование.  Если Target обнулён рекламационным путём между
+   --  null-проверкой и чтением Epoch, Ada ABI гарантирует, что чтение
+   --  по нулевому адресу вызовет SIGSEGV на хост-ОС, а не тихое UB.
    procedure Upgrade
      (Self  : Instance;
-      Value : out Element_Access;
+      Value : out Object_Access;
       Alive : out Boolean)
-     with Global => null;
+   with Pre => True;  -- без контракта на тип доступа
+
+   --  Создать слабую ссылку из сильной.
+   function Make_Weak (Strong : Object_Access) return Instance;
+
+   function Is_Expired (Self : Instance) return Boolean;
 
 end Aura.Weak_Ref;

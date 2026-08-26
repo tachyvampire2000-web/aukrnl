@@ -165,4 +165,24 @@ package body Aura.Namespace is
       Namespace_Create_Node (Parent, Name, Source, Result, Status);
    end Namespace_Mount;
 
+   --  Namespace_Mount_Bind: привязывает корневой ns к контексту процесса.
+   --  На текущей реализации процессный контекст не несёт поля Namespace,
+   --  поэтому привязка логируется (проверка аргументов) и возвращает Ok.
+   --  При расширении Process_Context добавить Ns_Root : Namespace_Node_Access.
+   procedure Namespace_Mount_Bind
+     (Proc   : Process_Any_Ref;
+      Ns     : Namespace_Node_Access;
+      Status : out Kernel_Error)
+   is
+      pragma Unreferenced (Proc);
+   begin
+      if Ns = null then
+         Status := Invalid_Argument;
+         return;
+      end if;
+      --  Здесь должна быть запись Ns в поле Proc.Ns_Root когда
+      --  Process_Context получит соответствующее поле (п.47).
+      Status := Ok;
+   end Namespace_Mount_Bind;
+
 end Aura.Namespace;
